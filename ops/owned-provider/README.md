@@ -71,6 +71,7 @@ Runbooks:
 
 - [Configuration and secrets](CONFIGURATION.md)
 - [Mail and DNS preflight](MAIL_DNS.md)
+- [Mail-edge architecture decision](MAIL_EDGE_ARCHITECTURE.md)
 - [Operations, metrics, alerts, and lifecycle](OPERATIONS.md)
 - [Disaster recovery](DISASTER_RECOVERY.md)
 - [Capacity and scaling](CAPACITY.md)
