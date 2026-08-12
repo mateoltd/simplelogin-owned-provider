@@ -1,0 +1,285 @@
+name: simplelogin-owned-provider
+
+x-app: &app
+  image: simplelogin-owned-provider:${SIMPLELOGIN_UPSTREAM_COMMIT:?set by owned-provider}
+  platform: linux/amd64
+  build:
+    context: ../..
+    dockerfile: ops/owned-provider/Dockerfile
+    args:
+      BASE_IMAGE: simplelogin-owned-provider-upstream:${SIMPLELOGIN_UPSTREAM_COMMIT}
+    labels:
+      org.opencontainers.image.source: https://github.com/simple-login/app
+      org.opencontainers.image.revision: ${SIMPLELOGIN_UPSTREAM_COMMIT}
+  entrypoint: ["/code/ops/owned-provider/entrypoint.sh"]
+  user: "65532:65532"
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=128m
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  environment: &app_environment
+    URL: http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT:-17777}
+    EMAIL_DOMAIN: ${OWNED_PROVIDER_EMAIL_DOMAIN:-sl.lan}
+    FIRST_ALIAS_DOMAIN: ${OWNED_PROVIDER_EMAIL_DOMAIN:-sl.lan}
+    ALIAS_DOMAINS: ${OWNED_PROVIDER_ALIAS_DOMAINS:-["sl.lan","aliases.sl.lan"]}
+    SUPPORT_EMAIL: support@${OWNED_PROVIDER_EMAIL_DOMAIN:-sl.lan}
+    POSTMASTER: postmaster@${OWNED_PROVIDER_EMAIL_DOMAIN:-sl.lan}
+    ADMIN_EMAIL: ${OWNED_PROVIDER_ADMIN_EMAIL:-admin@mailbox.lan}
+    EMAIL_SERVERS_WITH_PRIORITY: '[(10, "mailpit.")]'
+    DB_HOST: postgres
+    DB_PORT: "5432"
+    DB_NAME: simplelogin
+    DB_USER: simplelogin
+    DB_CONN_NAME: simplelogin-owned-provider
+    DB_PASSWORD_FILE: /run/secrets/postgres_password
+    MEM_STORE_URI: redis://redis:6379/0
+    POSTFIX_SERVER: mailpit
+    POSTFIX_PORT: "1025"
+    POSTFIX_CONNECT_TIMEOUT: "2"
+    POSTFIX_TIMEOUT: "5"
+    LOCAL_FILE_UPLOAD: "1"
+    DISABLE_REGISTRATION: "1"
+    DISABLE_ONBOARDING: "1"
+    DISABLE_ALIAS_SUFFIX: "1"
+    WORDS_FILE_PATH: local_data/test_words.txt
+    ALIAS_LIMIT: ${OWNED_PROVIDER_ALIAS_LIMIT:-100/day;50/hour;20/minute}
+    MAX_NB_EMAIL_FREE_PLAN: "1000"
+    FLASK_SECRET_FILE: /run/secrets/flask_secret
+    PARTNER_API_TOKEN_SECRET_FILE: /run/secrets/partner_api_token_secret
+    RECOVERY_CODE_HMAC_SECRET_FILE: /run/secrets/recovery_code_hmac_secret
+    ALIAS_TRANSFER_TOKEN_SECRET_FILE: /run/secrets/alias_transfer_token_secret
+    VERP_EMAIL_SECRET_FILE: /run/secrets/verp_email_secret
+    MASTER_ENC_KEY_HEX_FILE: /run/secrets/master_enc_key_hex
+    MAC_KEY_HEX_FILE: /run/secrets/mac_key_hex
+    ABUSER_HKDF_SALT_FILE: /run/secrets/abuser_hkdf_salt
+    HOME: /tmp
+    PYTHONPATH: /code
+  secrets: &app_secrets
+    - postgres_password
+    - flask_secret
+    - partner_api_token_secret
+    - recovery_code_hmac_secret
+    - alias_transfer_token_secret
+    - verp_email_secret
+    - master_enc_key_hex
+    - mac_key_hex
+    - abuser_hkdf_salt
+  volumes: &app_volumes
+    - uploads:/code/static/upload
+  depends_on: &app_dependencies
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    mailpit:
+      condition: service_healthy
+
+services:
+  upstream-image:
+    image: simplelogin-owned-provider-upstream:${SIMPLELOGIN_UPSTREAM_COMMIT:?set by owned-provider}
+    platform: linux/amd64
+    profiles: ["build"]
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      labels:
+        org.opencontainers.image.source: https://github.com/simple-login/app
+        org.opencontainers.image.revision: ${SIMPLELOGIN_UPSTREAM_COMMIT}
+
+  postgres:
+    image: postgres:16.14-alpine3.23@sha256:42b8b8b29c8a4e933d88943e5b03001a78794905cf786e6e7634e9f2abd5a0d3
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: simplelogin
+      POSTGRES_USER: simplelogin
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U simplelogin -d simplelogin"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt: ["no-new-privileges:true"]
+
+  redis:
+    image: redis:7.4.9-alpine3.21@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt: ["no-new-privileges:true"]
+
+  mailpit:
+    image: axllent/mailpit:v1.30.0@sha256:0059ef81e492a7192af3816281eed6859eb078bd7bdc58b76757c13e10e53a7d
+    restart: unless-stopped
+    command: ["--database", "/data/mailpit.db", "--max", "2000"]
+    volumes:
+      - mailpit:/data
+    ports:
+      - 127.0.0.1:${OWNED_PROVIDER_MAILPIT_HTTP_PORT:-18025}:8025
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt: ["no-new-privileges:true"]
+
+  migrate:
+    <<: *app
+    profiles: ["tools"]
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+
+  initialize:
+    <<: *app
+    profiles: ["tools"]
+    command: ["python", "init_app.py"]
+
+  bootstrap:
+    <<: *app
+    profiles: ["tools"]
+    environment:
+      <<: *app_environment
+      OWNED_PROVIDER_CUSTOM_DOMAIN: ${OWNED_PROVIDER_CUSTOM_DOMAIN:-owned.lan}
+      ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+    secrets:
+      - postgres_password
+      - flask_secret
+      - partner_api_token_secret
+      - recovery_code_hmac_secret
+      - alias_transfer_token_secret
+      - verp_email_secret
+      - master_enc_key_hex
+      - mac_key_hex
+      - abuser_hkdf_salt
+      - admin_password
+    command: ["python", "ops/owned-provider/scripts/bootstrap.py"]
+
+  app:
+    <<: *app
+    restart: unless-stopped
+    command:
+      - gunicorn
+      - wsgi:app
+      - --bind
+      - 0.0.0.0:7777
+      - --workers
+      - ${OWNED_PROVIDER_GUNICORN_WORKERS:-2}
+      - --timeout
+      - "30"
+      - --max-requests
+      - "1000"
+      - --max-requests-jitter
+      - "50"
+      - --access-logfile
+      - '-'
+      - --error-logfile
+      - '-'
+    ports:
+      - 127.0.0.1:${OWNED_PROVIDER_HTTP_PORT:-17777}:7777
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7777/health', timeout=2).read()"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
+
+  email:
+    <<: *app
+    restart: unless-stopped
+    command: ["python", "email_handler.py"]
+    ports:
+      - 127.0.0.1:${OWNED_PROVIDER_SMTP_PORT:-20381}:20381
+    healthcheck:
+      test: ["CMD-SHELL", "grep -aq email_handler.py /proc/1/cmdline"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  job-runner:
+    <<: *app
+    restart: unless-stopped
+    command: ["python", "job_runner.py"]
+    healthcheck:
+      test: ["CMD-SHELL", "grep -aq job_runner.py /proc/1/cmdline"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  e2e:
+    <<: *app
+    profiles: ["tools"]
+    environment:
+      <<: *app_environment
+      OWNED_PROVIDER_BASE_URL: http://app:7777
+      OWNED_PROVIDER_SMTP_HOST: email
+      OWNED_PROVIDER_SMTP_PORT: "20381"
+      OWNED_PROVIDER_MAILPIT_URL: http://mailpit:8025
+      OWNED_PROVIDER_CUSTOM_DOMAIN: ${OWNED_PROVIDER_CUSTOM_DOMAIN:-owned.lan}
+      ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+    secrets:
+      - postgres_password
+      - flask_secret
+      - partner_api_token_secret
+      - recovery_code_hmac_secret
+      - alias_transfer_token_secret
+      - verp_email_secret
+      - master_enc_key_hex
+      - mac_key_hex
+      - abuser_hkdf_salt
+      - admin_password
+    command: ["python", "ops/owned-provider/scripts/e2e.py"]
+    depends_on:
+      app:
+        condition: service_healthy
+      email:
+        condition: service_healthy
+      job-runner:
+        condition: service_healthy
+
+secrets:
+  postgres_password:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR:?run owned-provider init}/secrets/postgres_password
+  flask_secret:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/flask_secret
+  partner_api_token_secret:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/partner_api_token_secret
+  recovery_code_hmac_secret:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/recovery_code_hmac_secret
+  alias_transfer_token_secret:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/alias_transfer_token_secret
+  verp_email_secret:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/verp_email_secret
+  master_enc_key_hex:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/master_enc_key_hex
+  mac_key_hex:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mac_key_hex
+  abuser_hkdf_salt:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/abuser_hkdf_salt
+  admin_password:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/admin_password
+
+volumes:
+  postgres:
+    name: simplelogin-owned-provider_postgres
+  redis:
+    name: simplelogin-owned-provider_redis
+  uploads:
+    name: simplelogin-owned-provider_uploads
+  mailpit:
+    name: simplelogin-owned-provider_mailpit
