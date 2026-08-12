@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repository_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
+runtime_dir="${OWNED_PROVIDER_RUNTIME_DIR:-$repository_root/.owned-provider}"
+config_file="$runtime_dir/config.env"
+compose_file="$script_dir/compose.yml"
+project_name="simplelogin-owned-provider"
+source_commit="$(tr -d '[:space:]' <"$script_dir/UPSTREAM_COMMIT")"
+
+require() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'required command not found: %s\n' "$1" >&2
+    exit 1
+  }
+}
+
+initialize_runtime() {
+  require openssl
+  mkdir -p "$runtime_dir/secrets" "$runtime_dir/backups" "$runtime_dir/exports" "$runtime_dir/evidence" "$runtime_dir/sdk-target"
+  chmod 700 "$runtime_dir" "$runtime_dir/secrets"
+  if [[ ! -f "$config_file" ]]; then
+    {
+      printf 'OWNED_PROVIDER_RUNTIME_DIR=%s\n' "$runtime_dir"
+      printf 'SIMPLELOGIN_UPSTREAM_COMMIT=%s\n' "$source_commit"
+      cat "$script_dir/config.env.example"
+    } >"$config_file.tmp"
+    chmod 600 "$config_file.tmp"
+    mv "$config_file.tmp" "$config_file"
+  fi
+  local name
+  for name in \
+    postgres_password flask_secret partner_api_token_secret \
+    recovery_code_hmac_secret alias_transfer_token_secret verp_email_secret \
+    master_enc_key_hex mac_key_hex abuser_hkdf_salt
+  do
+    if [[ ! -f "$runtime_dir/secrets/$name" ]]; then
+      openssl rand -hex 32 >"$runtime_dir/secrets/$name"
+      chmod 600 "$runtime_dir/secrets/$name"
+    fi
+  done
+  if [[ ! -f "$runtime_dir/secrets/admin_password" ]]; then
+    openssl rand -base64 30 | tr -d '\r\n' >"$runtime_dir/secrets/admin_password"
+    printf '\n' >>"$runtime_dir/secrets/admin_password"
+    chmod 600 "$runtime_dir/secrets/admin_password"
+  fi
+}
+
+load_configuration() {
+  initialize_runtime
+  set -a
+  # shellcheck disable=SC1090
+  source "$config_file"
+  set +a
+  export OWNED_PROVIDER_RUNTIME_DIR="$runtime_dir"
+  export SIMPLELOGIN_UPSTREAM_COMMIT="$source_commit"
+  [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]]
+  git -C "$repository_root" cat-file -e "${source_commit}^{commit}"
+}
+
+compose() {
+  docker compose --project-name "$project_name" --env-file "$config_file" --file "$compose_file" "$@"
+}
+
+wait_for_url() {
+  local url="$1"
+  local attempts="${2:-90}"
+  local attempt
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if curl --silent --show-error --fail --connect-timeout 2 --max-time 5 "$url" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 1
+  done
+  printf 'timed out waiting for %s\n' "$url" >&2
+  return 1
+}
+
+prepare_volumes() {
+  local image="simplelogin-owned-provider:$source_commit"
+  ensure_volume simplelogin-owned-provider_uploads uploads
+  docker run --rm --platform linux/amd64 --user 0 --entrypoint sh \
+    -v simplelogin-owned-provider_uploads:/code/static/upload \
+    "$image" -c 'chown -R 65532:65532 /code/static/upload'
+}
+
+ensure_volume() {
+  local volume="$1"
+  local logical_name="$2"
+  if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    docker volume create \
+      --label "com.docker.compose.project=$project_name" \
+      --label "com.docker.compose.volume=$logical_name" \
+      "$volume" >/dev/null
+  fi
+}
+
+build_images() {
+  compose --profile build build upstream-image
+  compose build app
+}
+
+start_application() {
+  compose up --detach postgres redis mailpit
+  prepare_volumes
+  compose --profile tools run --rm migrate
+  compose --profile tools run --rm initialize
+  compose --profile tools run --rm bootstrap
+  compose up --detach app email job-runner
+  wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT}/health"
+}
+
+run_status() {
+  compose --profile tools run --rm --no-deps \
+    -e OWNED_PROVIDER_BASE_URL=http://app:7777 \
+    app python ops/owned-provider/scripts/operational_check.py
+}
+
+run_export() {
+  local output="${1:-$runtime_dir/exports/recovery-$(date -u +%Y%m%dT%H%M%SZ).json}"
+  local output_dir output_name
+  mkdir -p "$(dirname "$output")"
+  output_dir="$(cd "$(dirname "$output")" && pwd)"
+  output_name="$(basename "$output")"
+  compose --profile tools run --rm --no-deps \
+    -v "$output_dir:/recovery" \
+    app python ops/owned-provider/scripts/recovery_export.py "/recovery/$output_name"
+  printf '%s\n' "$output"
+}
+
+archive_volume() {
+  local volume="$1"
+  local output="$2"
+  docker run --rm --platform linux/amd64 --user 0 --entrypoint tar \
+    -v "$volume:/source:ro" "simplelogin-owned-provider:$source_commit" \
+    -C /source -cf - . >"$output"
+}
+
+restore_volume() {
+  local volume="$1"
+  local logical_name="$2"
+  local input="$3"
+  ensure_volume "$volume" "$logical_name"
+  docker run --rm --platform linux/amd64 --user 0 --entrypoint tar \
+    -i -v "$volume:/target" "simplelogin-owned-provider:$source_commit" \
+    -C /target -xf - <"$input"
+}
+
+run_backup() {
+  local backup_dir="${1:-$runtime_dir/backups/backup-$(date -u +%Y%m%dT%H%M%SZ)}"
+  mkdir -p "$backup_dir"
+  chmod 700 "$backup_dir"
+  run_status >/dev/null
+  compose stop app email job-runner mailpit
+  local restart_required=1
+  trap 'if [[ "$restart_required" == 1 ]]; then compose up --detach redis mailpit app email job-runner >/dev/null; fi' RETURN
+  compose exec --no-TTY postgres pg_dump \
+    --username simplelogin --dbname simplelogin --format=custom --no-owner --no-acl \
+    >"$backup_dir/database.dump"
+  compose stop redis
+  archive_volume simplelogin-owned-provider_uploads "$backup_dir/uploads.tar"
+  archive_volume simplelogin-owned-provider_redis "$backup_dir/redis.tar"
+  archive_volume simplelogin-owned-provider_mailpit "$backup_dir/mailpit.tar"
+  {
+    printf 'upstream_commit=%s\n' "$source_commit"
+    printf 'local_head=%s\n' "$(git -C "$repository_root" rev-parse HEAD)"
+    printf 'schema_revision=%s\n' "$(compose exec --no-TTY postgres psql --username simplelogin --dbname simplelogin --tuples-only --no-align --command 'SELECT version_num FROM alembic_version;')"
+    printf 'postgres_version=%s\n' "$(compose exec --no-TTY postgres psql --username simplelogin --dbname simplelogin --tuples-only --no-align --command 'SHOW server_version;')"
+    printf 'created_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$backup_dir/metadata.txt"
+  (cd "$backup_dir" && shasum -a 256 database.dump uploads.tar redis.tar mailpit.tar metadata.txt >SHA256SUMS)
+  restart_required=0
+  trap - RETURN
+  compose up --detach redis mailpit app email job-runner >/dev/null
+  wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT}/health"
+  printf '%s\n' "$backup_dir"
+}
+
+run_restore() {
+  local backup_dir="${1:?restore requires a backup directory}"
+  backup_dir="$(cd "$backup_dir" && pwd)"
+  [[ -f "$backup_dir/SHA256SUMS" ]]
+  (cd "$backup_dir" && shasum -a 256 --check SHA256SUMS)
+  grep -qx "upstream_commit=$source_commit" "$backup_dir/metadata.txt"
+  compose down --volumes --remove-orphans
+  ensure_volume simplelogin-owned-provider_uploads uploads
+  ensure_volume simplelogin-owned-provider_redis redis
+  ensure_volume simplelogin-owned-provider_mailpit mailpit
+  compose up --detach --wait postgres
+  compose exec --no-TTY postgres pg_restore \
+    --username simplelogin --dbname simplelogin --clean --if-exists --no-owner --no-acl \
+    <"$backup_dir/database.dump"
+  restore_volume simplelogin-owned-provider_uploads uploads "$backup_dir/uploads.tar"
+  restore_volume simplelogin-owned-provider_redis redis "$backup_dir/redis.tar"
+  restore_volume simplelogin-owned-provider_mailpit mailpit "$backup_dir/mailpit.tar"
+  prepare_volumes
+  compose up --detach redis mailpit
+  compose --profile tools run --rm migrate
+  compose --profile tools run --rm initialize
+  compose up --detach app email job-runner
+  wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT}/health"
+  run_status
+}
+
+run_clean_import() {
+  local export_path="${1:?clean-import requires an export path}"
+  export_path="$(cd "$(dirname "$export_path")" && pwd)/$(basename "$export_path")"
+  compose down --volumes --remove-orphans
+  compose up --detach postgres redis mailpit
+  prepare_volumes
+  compose --profile tools run --rm migrate
+  compose --profile tools run --rm initialize
+  compose --profile tools run --rm --no-deps \
+    -e ADMIN_PASSWORD_FILE=/run/secrets/admin_password \
+    -v "$(dirname "$export_path"):/recovery:ro" \
+    bootstrap python ops/owned-provider/scripts/recovery_import.py "/recovery/$(basename "$export_path")"
+  compose up --detach app email job-runner
+  wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT}/health"
+  run_status
+}
+
+run_post_restore() {
+  compose --profile tools run --rm --no-deps \
+    -e OWNED_PROVIDER_BASE_URL=http://app:7777 \
+    e2e python ops/owned-provider/scripts/post_restore.py
+}
+
+run_drill() {
+  local stamp export_path backup_dir before_hash after_hash imported_hash
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  export_path="$runtime_dir/exports/drill-$stamp.json"
+  backup_dir="$runtime_dir/backups/drill-$stamp"
+  compose --profile tools run --rm e2e
+  run_export "$export_path" >/dev/null
+  before_hash="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["data_sha256"])' "$export_path")"
+  run_backup "$backup_dir" >/dev/null
+  run_restore "$backup_dir" >/dev/null
+  run_export "$runtime_dir/exports/post-db-restore-$stamp.json" >/dev/null
+  after_hash="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["data_sha256"])' "$runtime_dir/exports/post-db-restore-$stamp.json")"
+  [[ "$before_hash" == "$after_hash" ]]
+  run_post_restore
+  run_clean_import "$export_path" >/dev/null
+  run_export "$runtime_dir/exports/post-recovery-import-$stamp.json" >/dev/null
+  imported_hash="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["data_sha256"])' "$runtime_dir/exports/post-recovery-import-$stamp.json")"
+  [[ "$before_hash" == "$imported_hash" ]]
+  run_post_restore
+  run_restore "$backup_dir" >/dev/null
+  run_post_restore
+  printf '{"backup":"%s","database_restore_hash":"%s","recovery_import_hash":"%s","final_restore":"ok"}\n' \
+    "$backup_dir" "$after_hash" "$imported_hash"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: ops/owned-provider/bin/owned-provider COMMAND [ARG]
+
+Commands:
+  init                 Generate local config and mode-0600 secrets
+  build                Build the pinned SimpleLogin image
+  up                   Migrate, initialize, bootstrap, and start all services
+  status               Check HTTP, PostgreSQL, Redis, migrations, jobs, and mail state
+  e2e                  Run the real API, SMTP, queue, concurrency, and limit lifecycle
+  export [FILE]        Write the relationship-complete recovery JSON
+  backup [DIR]         Create a checksummed database and state backup
+  restore DIR          Restore a backup into clean volumes and verify health
+  clean-import FILE    Recover aliases and relationships into a clean migrated DB
+  post-restore         Prove account auth and create/delete after recovery
+  drill                Run e2e, backup, DB restore, export import, and final restore
+  sdk-conformance DIR  Run the SDK lab's ignored real-service generator test
+  audit                Audit provenance, containment, secrets, and container hardening
+  upstream-check       Fetch upstream and report divergence without changing the branch
+  logs                 Follow application, email, queue, database, Redis, and sink logs
+  down                 Stop containers but retain data
+  destroy              Remove only this deployment's containers and volumes
+EOF
+}
+
+load_configuration
+require docker
+require curl
+docker info >/dev/null
+docker compose version >/dev/null
+
+case "${1:-}" in
+  init)
+    compose config --quiet
+    printf 'runtime initialized at %s\n' "$runtime_dir"
+    ;;
+  build)
+    build_images
+    ;;
+  up)
+    build_images
+    start_application
+    run_status
+    ;;
+  status)
+    run_status
+    ;;
+  e2e)
+    compose --profile tools run --rm e2e
+    ;;
+  export)
+    run_export "${2:-}"
+    ;;
+  backup)
+    run_backup "${2:-}"
+    ;;
+  restore)
+    run_restore "${2:-}"
+    ;;
+  clean-import)
+    run_clean_import "${2:-}"
+    ;;
+  post-restore)
+    run_post_restore
+    ;;
+  drill)
+    run_drill
+    ;;
+  sdk-conformance)
+    sdk_worktree="${2:?sdk-conformance requires the SDK laboratory worktree}"
+    python3 "$script_dir/scripts/sdk_conformance.py" "$sdk_worktree" \
+      --base-url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT}" \
+      --email "$OWNED_PROVIDER_ADMIN_EMAIL" \
+      --password-file "$runtime_dir/secrets/admin_password" \
+      --target-dir "$runtime_dir/sdk-target"
+    ;;
+  audit)
+    run_status
+    python3 "$script_dir/scripts/host_audit.py" \
+      --repository "$repository_root" --runtime "$runtime_dir" --project "$project_name"
+    ;;
+  upstream-check)
+    git -C "$repository_root" fetch upstream master
+    printf 'baseline=%s\nhead=%s\nupstream=%s\n' \
+      "$source_commit" "$(git -C "$repository_root" rev-parse HEAD)" \
+      "$(git -C "$repository_root" rev-parse upstream/master)"
+    git -C "$repository_root" rev-list --left-right --count HEAD...upstream/master
+    git -C "$repository_root" diff --stat "$source_commit"..HEAD
+    ;;
+  logs)
+    compose logs --follow --tail 200 app email job-runner postgres redis mailpit
+    ;;
+  down)
+    compose down --remove-orphans
+    ;;
+  destroy)
+    compose down --volumes --remove-orphans
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
