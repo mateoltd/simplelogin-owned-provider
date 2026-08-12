@@ -1,0 +1,59 @@
+groups:
+  - name: simplelogin-owned-provider
+    rules:
+      - alert: OwnedProviderNotReady
+        expr: owned_provider_ready == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: SimpleLogin owned provider is not ready
+      - alert: OwnedProviderDependencyDown
+        expr: owned_provider_dependency_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: SimpleLogin owned provider dependency is down
+      - alert: OwnedProviderSyntheticFailed
+        expr: owned_provider_synthetic_success == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: API, SMTP, or outbound-relay synthetic failed
+      - alert: OwnedProviderSyntheticStale
+        expr: owned_provider_synthetic_age_seconds > 900
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Synthetic probe result is stale
+      - alert: OwnedProviderJobsStuck
+        expr: owned_provider_job_oldest_seconds{state="taken"} > 2100
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A taken job exceeded the retry window
+      - alert: OwnedProviderJobErrors
+        expr: owned_provider_jobs{state="error"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: SimpleLogin jobs reached terminal error state
+      - alert: OwnedProviderBackupStale
+        expr: owned_provider_backup_age_seconds > 90000 or owned_provider_backup_success == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Encrypted provider backup is missing, failed, or older than 25 hours
+      - alert: OwnedProviderStorageLow
+        expr: owned_provider_resource{resource="volume_available_bytes"} < 10737418240
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Provider volume filesystem has less than 10 GiB available
