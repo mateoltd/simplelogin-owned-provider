@@ -333,7 +333,8 @@ case "${1:-}" in
       --repository "$repository_root" --runtime "$runtime_dir" --project "$project_name"
     ;;
   upstream-check)
-    git -C "$repository_root" fetch upstream master
+    git -C "$repository_root" fetch \
+      upstream master:refs/remotes/upstream/master
     printf 'baseline=%s\nhead=%s\nupstream=%s\n' \
       "$source_commit" "$(git -C "$repository_root" rev-parse HEAD)" \
       "$(git -C "$repository_root" rev-parse upstream/master)"
