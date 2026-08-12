@@ -72,7 +72,7 @@ def main():
             for binding in values or []:
                 if binding.get("HostIp") not in ("127.0.0.1", "::1"):
                     loopback_ports = False
-        if service in {"app", "email", "job-runner"}:
+        if service in {"app", "email", "job-runner", "observer", "synthetic"}:
             hardened[service] = {
                 "user": container["Config"]["User"],
                 "read_only": container["HostConfig"]["ReadonlyRootfs"],
@@ -90,7 +90,7 @@ def main():
                 raise RuntimeError(
                     f"service {service} is not running hardened: {values}"
                 )
-    missing_hardened = {"app", "email", "job-runner"} - hardened.keys()
+    missing_hardened = {"app", "email", "job-runner", "observer", "synthetic"} - hardened.keys()
     if missing_hardened:
         raise RuntimeError(f"hardened services not running: {sorted(missing_hardened)}")
     if not loopback_ports:

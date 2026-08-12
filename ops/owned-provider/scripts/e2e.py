@@ -30,6 +30,7 @@ SMTP_HOST = os.environ["OWNED_PROVIDER_SMTP_HOST"]
 SMTP_PORT = int(os.environ["OWNED_PROVIDER_SMTP_PORT"])
 ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
 CUSTOM_DOMAIN = os.environ["OWNED_PROVIDER_CUSTOM_DOMAIN"]
+MAILBOX_DOMAIN = os.environ["OWNED_PROVIDER_E2E_MAILBOX_DOMAIN"]
 PASSWORD = Path(os.environ["ADMIN_PASSWORD_FILE"]).read_text().strip()
 MAX_BODY = 2_000_000
 
@@ -120,6 +121,16 @@ def wait_for_mailbox_verification(mailbox_email: str):
     raise AssertionError(f"mailbox verification message not found for {mailbox_email}")
 
 
+def wait_for_mailbox_deletion(mailbox_id: int, api_key: str):
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        _, payload = http_request("GET", "/api/v2/mailboxes", api_key=api_key)
+        if not any(item["id"] == mailbox_id for item in payload["mailboxes"]):
+            return
+        time.sleep(0.5)
+    raise AssertionError(f"mailbox {mailbox_id} was not deleted by the job runner")
+
+
 def send_mail(sender: str, recipient: str, subject: str):
     message = EmailMessage()
     message["From"] = sender
@@ -183,7 +194,7 @@ def main():
 
     # The API performs a real MX lookup before sending. Use a domain with valid
     # MX records; POSTFIX_SERVER still terminates delivery at local Mailpit.
-    secondary = f"owned-provider-{nonce}@gmail.com"
+    secondary = f"owned-provider-{nonce}@{MAILBOX_DOMAIN}"
     _, mailbox = http_request(
         "POST", "/api/mailboxes", {"email": secondary}, api_key, expected=(201,)
     )
@@ -279,7 +290,7 @@ def main():
     )
     assert toggled["enabled"] is True
 
-    contact_address = f"contact-{nonce}@contact.lan"
+    contact_address = f"contact-{nonce}@example.com"
     _, contact = http_request(
         "POST",
         f"/api/aliases/{custom_alias['id']}/contacts",
@@ -322,6 +333,20 @@ def main():
     )
     assert not deleted_search["aliases"]
 
+    http_request(
+        "DELETE",
+        f"/api/mailboxes/{mailbox_id}",
+        {"transfer_aliases_to": default_mailbox["id"]},
+        api_key,
+    )
+    wait_for_mailbox_deletion(mailbox_id, api_key)
+    _, alias_after_transfer = http_request(
+        "GET", f"/api/aliases/{custom_alias['id']}", api_key=api_key
+    )
+    assert [item["id"] for item in alias_after_transfer["mailboxes"]] == [
+        default_mailbox["id"]
+    ]
+
     queue_job_id = queue_probe()
 
     redis.Redis.from_url(os.environ["MEM_STORE_URI"]).flushdb()
@@ -349,6 +374,7 @@ def main():
     redis.Redis.from_url(os.environ["MEM_STORE_URI"]).flushdb()
 
     sequential_success = 0
+    sequential_created = []
     rate_limited = None
     for index in range(25):
         status, payload = create_concurrent(100 + index)
@@ -356,9 +382,17 @@ def main():
             rate_limited = payload
             break
         sequential_success += 1
+        sequential_created.append(payload)
     assert sequential_success == 20
     assert rate_limited == {"error": "Rate limit exceeded"}
     redis.Redis.from_url(os.environ["MEM_STORE_URI"]).flushdb()
+
+    for alias_id in [
+        custom_alias["id"],
+        *(item["id"] for item in accepted),
+        *(item["id"] for item in sequential_created),
+    ]:
+        http_request("DELETE", f"/api/aliases/{alias_id}", api_key=api_key)
 
     print(
         json.dumps(
@@ -376,6 +410,7 @@ def main():
                 "concurrent_lock_rejected": len(lock_rejected),
                 "rate_limit_successes_before_429": 20,
                 "list_search_update_toggle_delete": "ok",
+                "mailbox_create_verify_transfer_delete": "ok",
             },
             sort_keys=True,
         )

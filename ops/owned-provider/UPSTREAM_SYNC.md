@@ -1,40 +1,54 @@
-# Upstream synchronization strategy
+# Upstream synchronization and drift lane
 
-The branch is a thin operations overlay on an unmodified official source tree.
-`UPSTREAM_COMMIT` is the only accepted base identity. Never merge arbitrary fork
-branches into this baseline.
+The fork is a thin operations overlay on the immutable commit in
+`UPSTREAM_COMMIT`. Never merge an arbitrary fork branch into this line and never
+change the pin without a reviewed upstream upgrade.
 
-## Read-only check
+## Read-only drift report
 
 ```sh
 ops/owned-provider/bin/owned-provider upstream-check
 ```
 
-This fetches `upstream/master`, reports divergence, and lists the local overlay.
-It does not alter the working branch.
+The command fetches only `upstream/master` into the existing tracking ref, then
+uses `git merge-tree` with the pinned commit as the explicit base. It writes a
+JSON report beneath the runtime evidence directory containing:
 
-## Upgrade procedure
+- exact baseline, local head, and candidate SHAs;
+- candidate commit count and changed paths;
+- overlap with the operations overlay;
+- replay conflict names/messages;
+- added/removed API routes, environment keys, and migrations;
+- Dockerfile and mail-handler change flags.
 
-1. Require a clean worktree and a successful baseline `drill`, SDK conformance,
-   and `audit`. Preserve the evidence and a restorable backup.
-2. Fetch official upstream and review release notes, security advisories,
-   migrations, Dockerfile changes, config additions/removals, API changes, and
-   mail-handler changes between `UPSTREAM_COMMIT` and the candidate SHA.
-3. Create a temporary upgrade branch from
-   `integration/owned-provider-baseline`. Rebase the small local commit series
-   with `git rebase --onto CANDIDATE_SHA OLD_UPSTREAM_COMMIT`.
-4. Change only `UPSTREAM_COMMIT` and operational compatibility code required by
-   the candidate. Do not copy upstream files into the overlay.
-5. Build without cache once, start from a copy of production-shaped data, run
-   migrations, then run `drill`, SDK conformance, and `audit`.
-6. Test rollback from the pre-upgrade backup. Database migrations may make code
-   rollback unsafe; treat backup restore as the rollback boundary unless the
-   upstream migration is explicitly reversible.
-7. Review `git diff --stat CANDIDATE_SHA..HEAD`. It must remain limited to
-   `.gitignore` and `ops/owned-provider/`. Merge only after evidence review.
-8. Push with a normal fast-forward update. Never rewrite the shared baseline
-   branch after adoption.
+It performs no merge, rebase, checkout, branch update, commit, or push. The
+report records whether any local branch ref changed while it ran.
 
-Keep operational fixes as small conventional commits. If a product-code fix is
-unavoidable, submit it upstream first and carry one isolated, documented patch
-with a removal condition. The current baseline carries no such patch.
+## Upgrade lane
+
+1. Require a clean tree and passing `drill`, SDK conformance, `audit`, current
+   backup, and clean-machine restore evidence.
+2. Run `upstream-check`; review release notes, security advisories, migrations,
+   dependency/container changes, API routes, mail handler, configuration, and
+   every reported conflict.
+3. Create a temporary branch from the provider branch. Replay the small local
+   commit series with:
+
+   ```sh
+   git rebase --onto CANDIDATE_SHA OLD_UPSTREAM_COMMIT
+   ```
+
+4. Change only `UPSTREAM_COMMIT` and compatibility code required by the new
+   release. Keep compatibility changes isolated and documented. Do not copy
+   upstream application files into the overlay.
+5. Build without cache, restore a copy of production-shaped state, migrate, and
+   run `production-audit`, `e2e`, `queue-drill`, `restart-drill`, `load`, SDK
+   conformance, backup, and clean-machine restore.
+6. Prove rollback from the pre-upgrade encrypted backup. Treat database restore
+   as the rollback boundary unless every upstream migration is known reversible.
+7. Review `git diff --stat CANDIDATE_SHA..HEAD`; changes should remain under
+   `.gitignore` and `ops/owned-provider/`. Push only after evidence approval.
+
+Keep operational changes as small conventional commits. If an application-code
+fix is unavoidable, submit it upstream and carry one isolated patch with a
+documented removal condition.

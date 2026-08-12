@@ -10,7 +10,7 @@ from server import create_light_app
 
 
 ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
-CUSTOM_DOMAIN = os.environ["OWNED_PROVIDER_CUSTOM_DOMAIN"]
+CUSTOM_DOMAINS = tuple(json.loads(os.environ["OWNED_PROVIDER_CUSTOM_DOMAINS"]))
 ALIAS_DOMAINS = tuple(json.loads(os.environ["ALIAS_DOMAINS"]))
 
 
@@ -50,25 +50,31 @@ def provision() -> dict:
     user.flags = user.flags & ~User.FLAG_FREE_DISABLE_CREATE_CONTACTS
     Session.commit()
 
-    custom_domain = CustomDomain.get_by(domain=CUSTOM_DOMAIN)
-    if custom_domain is None:
-        custom_domain = CustomDomain.create(user_id=user.id, domain=CUSTOM_DOMAIN)
-    elif custom_domain.user_id != user.id:
-        raise RuntimeError(f"custom domain {CUSTOM_DOMAIN} belongs to another user")
-    custom_domain.ownership_verified = True
-    custom_domain.verified = True
-    custom_domain.dkim_verified = True
-    custom_domain.spf_verified = True
-    custom_domain.dmarc_verified = True
-    custom_domain.pending_deletion = False
+    custom_domains = []
+    for name in CUSTOM_DOMAINS:
+        domain_name = name.strip().lower()
+        custom_domain = CustomDomain.get_by(domain=domain_name)
+        if custom_domain is None:
+            custom_domain = CustomDomain.create(user_id=user.id, domain=domain_name)
+        elif custom_domain.user_id != user.id:
+            raise RuntimeError(f"custom domain {domain_name} belongs to another user")
+        # Contained tests have no public DNS. Production must use dns-preflight
+        # and lifecycle domain-verify; never manufacture deliverability state.
+        if os.environ.get("OWNED_PROVIDER_TEST_MODE") == "1":
+            custom_domain.ownership_verified = True
+            custom_domain.verified = True
+            custom_domain.dkim_verified = True
+            custom_domain.spf_verified = True
+            custom_domain.dmarc_verified = True
+        custom_domain.pending_deletion = False
+        custom_domains.append({"domain": custom_domain.domain, "id": custom_domain.id})
     Session.commit()
 
     return {
         "admin_email": user.email,
         "admin_user_id": user.id,
         "default_mailbox_id": user.default_mailbox_id,
-        "custom_domain": custom_domain.domain,
-        "custom_domain_id": custom_domain.id,
+        "custom_domains": custom_domains,
         "public_alias_domains": [domain.strip() for domain in ALIAS_DOMAINS],
     }
 
