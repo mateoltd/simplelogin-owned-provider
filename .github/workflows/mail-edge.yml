@@ -1,0 +1,57 @@
+name: Mail edge package
+
+on:
+  pull_request:
+    paths:
+      - "mail-edge/**"
+      - ".github/workflows/mail-edge.yml"
+  push:
+    paths:
+      - "mail-edge/**"
+      - ".github/workflows/mail-edge.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: mail-edge/pyproject.toml
+
+      - name: Install package and test dependencies
+        run: python -m pip install "./mail-edge[dev]"
+
+      - name: Lint and test
+        run: |
+          ruff format --check mail-edge/src mail-edge/tests
+          ruff check mail-edge/src mail-edge/tests
+          pytest -q mail-edge
+
+      - name: Build reproducible release artifacts
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
+          mkdir -p /tmp/mail-edge-build-a /tmp/mail-edge-build-b
+          python -m build --outdir /tmp/mail-edge-build-a mail-edge
+          python -m build --outdir /tmp/mail-edge-build-b mail-edge
+          cmp /tmp/mail-edge-build-a/simplelogin_mail_edge-*.whl \
+            /tmp/mail-edge-build-b/simplelogin_mail_edge-*.whl
+          cmp /tmp/mail-edge-build-a/simplelogin_mail_edge-*.tar.gz \
+            /tmp/mail-edge-build-b/simplelogin_mail_edge-*.tar.gz
+          sha256sum /tmp/mail-edge-build-a/* | tee /tmp/mail-edge-build-a/SHA256SUMS
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: simplelogin-mail-edge
+          path: /tmp/mail-edge-build-a
+          if-no-files-found: error

@@ -1,0 +1,52 @@
+[project]
+name = "simplelogin-mail-edge"
+version = "0.1.0"
+description = "Provider-neutral durable mail ingress and submission edge"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "SimpleLogin" }]
+dependencies = [
+  "cryptography>=42,<46",
+  "psycopg[binary]>=3.2,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2,<2",
+  "hypothesis>=6.112,<7",
+  "pytest>=8.3,<9",
+  "ruff>=0.8,<1",
+]
+
+[project.scripts]
+mail-edge = "mail_edge.cli:main"
+mail-edge-hook = "mail_edge.http_service:main"
+mail-edge-metrics = "mail_edge.metrics:main"
+mail-edge-smtp = "mail_edge.smtp:main"
+mail-edge-worker = "mail_edge.worker:main"
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+  "src/mail_edge/**/*.py",
+  "src/mail_edge/migrations/*.sql",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mail_edge"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+

@@ -3,6 +3,7 @@
 db.sqlite
 .env
 .pytest_cache
+.hypothesis/
 .vscode
 .DS_Store
 /.owned-provider/
@@ -14,5 +15,7 @@ venv/
 .venv
 .coverage
 htmlcov
+mail-edge/dist/
+mail-edge/.ruff_cache/
 adhoc
 .env.*
