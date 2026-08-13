@@ -22,12 +22,14 @@ ops/owned-provider/bin/owned-provider drill
 ```
 
 `init` creates `.owned-provider/config.env` plus independent mode-0600 secrets.
-All test ports bind to loopback, Mailpit captures outbound mail, and RFC-reserved
-example domains are used except for the configurable mailbox-domain MX lookup.
-Nothing publishes mail or changes DNS.
+HTTP, metrics, and the Mailpit UI bind to loopback. Application SMTP on 20381
+and the authenticated mail-feedback API on 7781 are available only on the
+Compose network. Mailpit is the test-only `mail-edge-smtp` endpoint on port
+2525. RFC-reserved example domains are used except for the configurable
+mailbox-domain MX lookup. Nothing publishes mail or changes DNS.
 
-Local endpoints are API `http://127.0.0.1:17777`, SMTP `127.0.0.1:20381`,
-readiness/metrics `http://127.0.0.1:19090`, and Mailpit
+Local endpoints are API `http://127.0.0.1:17777`, readiness/metrics
+`http://127.0.0.1:19090`, and Mailpit
 `http://127.0.0.1:18025`.
 
 ## Production configuration

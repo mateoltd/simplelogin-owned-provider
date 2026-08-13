@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import ipaddress
 import json
 import os
 import re
@@ -86,17 +85,17 @@ def main():
         relay = os.environ["OWNED_PROVIDER_SMTP_RELAY_HOST"].lower()
         if relay in {"mailpit", "localhost", "127.0.0.1"}:
             failures.append("production SMTP relay cannot be the contained test sink")
-        if os.environ.get("OWNED_PROVIDER_SMTP_BIND") in {None, ""}:
-            failures.append("production SMTP bind address must be explicit")
+        if os.environ.get("OWNED_PROVIDER_SMTP_BACKUP_RELAYS"):
+            failures.append("automatic SMTP backup relays are not supported")
+        try:
+            relay_port = int(os.environ["OWNED_PROVIDER_SMTP_RELAY_PORT"])
+            if not 1 <= relay_port <= 65535:
+                raise ValueError
+        except (KeyError, ValueError):
+            failures.append("production SMTP relay port is invalid")
         for name in ("OWNED_PROVIDER_HTTP_BIND", "OWNED_PROVIDER_OBSERVER_BIND"):
             if os.environ.get(name) not in {"127.0.0.1", "::1"}:
                 failures.append(f"{name} must bind to loopback in production")
-        try:
-            outbound = ipaddress.ip_address(os.environ["OWNED_PROVIDER_OUTBOUND_IP"])
-            if outbound.is_private or outbound.is_loopback or outbound.is_reserved:
-                failures.append("production outbound address must be publicly routable")
-        except (KeyError, ValueError):
-            failures.append("production outbound address is missing or invalid")
     if not alias_domains:
         failures.append("at least one alias domain is required")
     if not custom_domains:
@@ -113,6 +112,7 @@ def main():
         "abuser_hkdf_salt",
         "admin_password",
         "dkim_private_key",
+        "mail_edge_hmac_keys",
         "backup_encryption_key",
     }
     for name in sorted(secret_names):
@@ -131,7 +131,29 @@ def main():
                 "PRIVATE KEY-----" not in value or len(value) < 1000
             ):
                 failures.append("DKIM private key is missing or malformed")
-            elif name not in HEX_SECRET_NAMES | {"admin_password", "dkim_private_key"} and len(value) < 32:
+            elif name == "mail_edge_hmac_keys":
+                try:
+                    keys = json.loads(value)
+                    valid_keys = (
+                        isinstance(keys, dict)
+                        and bool(keys)
+                        and all(
+                            isinstance(key_id, str)
+                            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", key_id)
+                            and isinstance(key, str)
+                            and re.fullmatch(r"[0-9a-f]{64,}", key)
+                            and len(key) % 2 == 0
+                            for key_id, key in keys.items()
+                        )
+                    )
+                except json.JSONDecodeError:
+                    valid_keys = False
+                if not valid_keys:
+                    failures.append("mail edge HMAC key set is malformed")
+            elif (
+                name not in HEX_SECRET_NAMES | {"admin_password", "dkim_private_key"}
+                and len(value) < 32
+            ):
                 failures.append(f"secret must contain at least 32 characters: {name}")
     config_path = Path(os.environ["OWNED_PROVIDER_CONFIG_FILE"])
     if stat.S_IMODE(config_path.stat().st_mode) != 0o600:

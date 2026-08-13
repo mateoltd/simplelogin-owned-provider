@@ -31,6 +31,10 @@ do
   read_secret "$secret_name"
 done
 
+if [ -n "${MAIL_EDGE_HMAC_KEYS_FILE:-}" ]; then
+  read_secret MAIL_EDGE_HMAC_KEYS
+fi
+
 read_secret DB_PASSWORD
 export DB_URI="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 unset DB_PASSWORD

@@ -13,25 +13,43 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from email.message import EmailMessage
+from email.utils import make_msgid
 from http.cookiejar import CookieJar
 from pathlib import Path
 
+import arrow
 import redis
 
 from app.db import Session
+from app.email import headers
+from app.email_utils import generate_verp_email
 from app.jobs.export_user_data_job import ExportUserDataJob
-from app.models import Job, JobState, User
+from app.mail_feedback import INGRESS_ID_HEADER, auth_headers
+from app.models import (
+    Alias,
+    Bounce,
+    EmailLog,
+    Job,
+    JobState,
+    ProviderComplaint,
+    User,
+    VerpType,
+)
 from server import create_light_app
 
 
 BASE_URL = os.environ["OWNED_PROVIDER_BASE_URL"].rstrip("/")
 MAILPIT_URL = os.environ["OWNED_PROVIDER_MAILPIT_URL"].rstrip("/")
+MAIL_FEEDBACK_URL = os.environ["OWNED_PROVIDER_MAIL_FEEDBACK_URL"].rstrip("/")
 SMTP_HOST = os.environ["OWNED_PROVIDER_SMTP_HOST"]
 SMTP_PORT = int(os.environ["OWNED_PROVIDER_SMTP_PORT"])
 ADMIN_EMAIL = os.environ["ADMIN_EMAIL"]
 CUSTOM_DOMAIN = os.environ["OWNED_PROVIDER_CUSTOM_DOMAIN"]
 MAILBOX_DOMAIN = os.environ["OWNED_PROVIDER_E2E_MAILBOX_DOMAIN"]
 PASSWORD = Path(os.environ["ADMIN_PASSWORD_FILE"]).read_text().strip()
+MAIL_EDGE_KEYS = json.loads(
+    Path(os.environ["OWNED_PROVIDER_MAIL_EDGE_HMAC_KEYS_FILE"]).read_text()
+)
 MAX_BODY = 2_000_000
 
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
@@ -76,6 +94,46 @@ def mailpit_request(path: str):
     if len(encoded) > MAX_BODY:
         raise AssertionError("Mailpit response exceeded safety limit")
     return json.loads(encoded)
+
+
+def mail_edge_request(
+    method: str, path: str, payload=None, nonce=None, expected=(200,)
+):
+    body = (
+        b""
+        if payload is None
+        else json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    )
+    key_id = sorted(MAIL_EDGE_KEYS)[0]
+    request_headers = auth_headers(
+        key_id,
+        bytes.fromhex(MAIL_EDGE_KEYS[key_id]),
+        method,
+        path,
+        body=body,
+        nonce=nonce,
+    )
+    if payload is not None:
+        request_headers["Content-Type"] = "application/json"
+    edge_request = urllib.request.Request(
+        MAIL_FEEDBACK_URL + path,
+        data=body,
+        headers=request_headers,
+        method=method,
+    )
+    try:
+        response = urllib.request.urlopen(edge_request, timeout=10)
+        response_status = response.status
+        encoded = response.read(MAX_BODY + 1)
+    except urllib.error.HTTPError as error:
+        response_status = error.code
+        encoded = error.read(MAX_BODY + 1)
+    if response_status not in expected:
+        raise AssertionError(
+            f"{method} {path}: expected {expected}, got {response_status}: "
+            f"{encoded.decode(errors='replace')}"
+        )
+    return response_status, json.loads(encoded)
 
 
 def mailpit_messages():
@@ -131,14 +189,26 @@ def wait_for_mailbox_deletion(mailbox_id: int, api_key: str):
     raise AssertionError(f"mailbox {mailbox_id} was not deleted by the job runner")
 
 
-def send_mail(sender: str, recipient: str, subject: str):
+def send_mail(
+    sender: str,
+    recipient: str,
+    subject: str,
+    ingress_id: str = None,
+    submissions: int = 1,
+):
     message = EmailMessage()
     message["From"] = sender
     message["To"] = recipient
     message["Subject"] = subject
+    message[headers.MESSAGE_ID] = make_msgid()
+    if ingress_id:
+        message[INGRESS_ID_HEADER] = ingress_id
     message.set_content(f"owned provider real SMTP lifecycle: {subject}")
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as smtp:
-        smtp.send_message(message, from_addr=sender, to_addrs=[recipient])
+    raw_message = message.as_bytes()
+    for _ in range(submissions):
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as smtp:
+            smtp.sendmail(sender, [recipient], raw_message)
+    return message[headers.MESSAGE_ID]
 
 
 def authenticate():
@@ -310,9 +380,102 @@ def main():
     http_request("POST", f"/api/contacts/{contact['id']}/toggle", api_key=api_key)
 
     forward_subject = f"owned-forward-{nonce}"
-    send_mail(contact_address, custom_alias["alias"], forward_subject)
-    wait_for_message(forward_subject, ADMIN_EMAIL)
+    ingress_id = f"ingress-{nonce}"
+    submitted_message_id = send_mail(
+        contact_address,
+        custom_alias["alias"],
+        forward_subject,
+        ingress_id=ingress_id,
+        submissions=2,
+    )
+    first_delivery = wait_for_message(forward_subject, ADMIN_EMAIL)
     wait_for_message(forward_subject, secondary)
+    assert INGRESS_ID_HEADER.lower() not in json.dumps(first_delivery).lower()
+    matching_messages = [
+        message
+        for message in mailpit_messages()
+        if message.get("Subject") == forward_subject
+    ]
+    assert len(matching_messages) == 2
+
+    ingress_path = f"/v1/ingress/{ingress_id}"
+    ingress_nonce = f"ingress-query-{nonce}"
+    _, ingress_receipt = mail_edge_request("GET", ingress_path, nonce=ingress_nonce)
+    assert ingress_receipt["state"] == "completed"
+    replay_status, _ = mail_edge_request(
+        "GET", ingress_path, nonce=ingress_nonce, expected=(409,)
+    )
+    assert replay_status == 409
+
+    with create_light_app().app_context():
+        alias = Alias.get(custom_alias["id"])
+        forward_logs = EmailLog.filter_by(
+            alias_id=alias.id, message_id=submitted_message_id, is_reply=False
+        ).all()
+        assert len(forward_logs) == 2
+        edge_log = next(
+            email_log
+            for email_log in forward_logs
+            if email_log.mailbox.email == ADMIN_EMAIL
+        )
+        edge_log_id = edge_log.id
+        edge_recipient = edge_log.mailbox.email
+        original_envelope_from = generate_verp_email(
+            VerpType.bounce_forward, edge_log.id
+        )
+
+    mapping = {
+        "edge_delivery_id": f"delivery-{nonce}",
+        "provider_message_id": f"transport-{nonce}",
+        "submitted_message_id": submitted_message_id,
+        "provider_visible_message_id": f"<visible-{nonce}@edge.invalid>",
+        "original_envelope_from": original_envelope_from,
+        "recipient": edge_recipient,
+    }
+    map_status, _ = mail_edge_request(
+        "POST",
+        "/v1/message-id-map",
+        payload=mapping,
+        nonce=f"message-map-{nonce}",
+        expected=(201,),
+    )
+    assert map_status == 201
+
+    hard_bounce = {
+        "provider_event_id": f"hard-bounce-{nonce}",
+        "provider_message_id": mapping["provider_message_id"],
+        "edge_delivery_id": mapping["edge_delivery_id"],
+        "event_type": "hard_bounce",
+        "recipient": edge_recipient,
+        "smtp_status": "550 5.1.1",
+        "diagnostic": "controlled local rejection",
+        "occurred_at": arrow.utcnow().isoformat(),
+    }
+    feedback_status, _ = mail_edge_request(
+        "POST",
+        "/v1/feedback",
+        payload=hard_bounce,
+        nonce=f"hard-bounce-{nonce}",
+        expected=(201,),
+    )
+    assert feedback_status == 201
+    complaint = dict(hard_bounce)
+    complaint["provider_event_id"] = f"complaint-{nonce}"
+    complaint["event_type"] = "complaint"
+    complaint_status, _ = mail_edge_request(
+        "POST",
+        "/v1/feedback",
+        payload=complaint,
+        nonce=f"complaint-{nonce}",
+        expected=(201,),
+    )
+    assert complaint_status == 201
+    with create_light_app().app_context():
+        Session.expire_all()
+        edge_log = EmailLog.get(edge_log_id)
+        assert edge_log.bounced
+        assert Bounce.filter_by(email=edge_recipient).count() >= 1
+        assert ProviderComplaint.filter_by(user_id=edge_log.user_id).count() >= 1
 
     reply_subject = f"owned-reply-{nonce}"
     send_mail(ADMIN_EMAIL, reverse_alias, reply_subject)

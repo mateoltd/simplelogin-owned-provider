@@ -46,6 +46,13 @@ initialize_runtime() {
       chmod 600 "$runtime_dir/secrets/$name"
     fi
   done
+  if [[ ! -f "$runtime_dir/secrets/mail_edge_hmac_keys" ]]; then
+    local mail_edge_key
+    mail_edge_key="$(openssl rand -hex 32)"
+    printf '{"edge-v1":"%s"}\n' "$mail_edge_key" \
+      >"$runtime_dir/secrets/mail_edge_hmac_keys"
+    chmod 600 "$runtime_dir/secrets/mail_edge_hmac_keys"
+  fi
   if [[ ! -f "$runtime_dir/secrets/admin_password" ]]; then
     openssl rand -base64 30 | tr -d '\r\n' >"$runtime_dir/secrets/admin_password"
     printf '\n' >>"$runtime_dir/secrets/admin_password"
@@ -167,7 +174,7 @@ start_application() {
   prepare_volumes
   run_migrations
   compose --profile tools run --rm bootstrap
-  compose up --detach app email job-runner
+  compose up --detach app email mail-feedback job-runner
   wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT:-17777}/health"
   compose up --detach observer synthetic
   wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_OBSERVER_PORT:-19090}/readyz"
@@ -203,7 +210,7 @@ restore_volume() {
 restart_after_checkpoint() {
   compose up --detach postgres redis >/dev/null
   mail_store_up >/dev/null
-  compose up --detach app email job-runner >/dev/null
+  compose up --detach app email mail-feedback job-runner >/dev/null
   wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT:-17777}/health"
   compose up --detach observer synthetic >/dev/null
   wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_OBSERVER_PORT:-19090}/readyz"
@@ -218,7 +225,7 @@ run_export() {
   mkdir -p "$output"
   chmod 700 "$output"
   run_status >/dev/null
-  compose stop synthetic observer app email job-runner >/dev/null
+  compose stop synthetic observer app email mail-feedback job-runner >/dev/null
   local restart_required=1
   trap 'if [[ "$restart_required" == 1 ]]; then restart_after_checkpoint; fi' EXIT
   compose exec --no-TTY redis redis-cli SAVE >/dev/null
@@ -308,7 +315,7 @@ run_import() {
     return 1
   fi
   run_migrations
-  compose up --detach app email job-runner
+  compose up --detach app email mail-feedback job-runner
   wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT:-17777}/health"
   compose up --detach observer synthetic
   wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_OBSERVER_PORT:-19090}/readyz"
@@ -460,7 +467,7 @@ run_restart_drill() {
     printf 'the restart traffic drill is restricted to contained test mode\n' >&2
     return 1
   fi
-  compose restart app email job-runner >/dev/null
+  compose restart app email mail-feedback job-runner >/dev/null
   wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_OBSERVER_PORT:-19090}/readyz"
   run_post_restore
 }
@@ -643,7 +650,7 @@ case "${1:-}" in
   # @command upstream-check               Report replay conflicts and compatibility drift
   upstream-check) run_upstream_check ;;
   # @command logs                         Follow structured provider logs
-  logs) compose logs --follow --tail 200 app email job-runner observer synthetic postgres redis mailpit ;;
+  logs) compose logs --follow --tail 200 app email mail-feedback job-runner observer synthetic postgres redis mailpit ;;
   # @command down                         Stop containers but retain data
   down) compose down --remove-orphans ;;
   # @command destroy                      Remove only this deployment's containers and volumes

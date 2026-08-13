@@ -1,18 +1,18 @@
 # Mail-edge architecture decision
 
-Status: proposed, not production-ready
+Status: neutral core bridge implemented; provider qualification remains pending
 
 Decision date: 2026-08-13
 
 Repository base: `origin/feat/owned-provider-production` at
 `fd6f63c1a02b153cf65ed905b34e50d2f516e1d3`
 
-Decision branch: `docs/mail-edge-architecture`
+Implementation branch: `feat/mail-edge-core-bridge`
 
-This is a documentation-only decision. It does not authorize deployment, DNS
-changes, provider configuration, production traffic, or a claim of production
-readiness. Personal domains, alias-state migration, recovery logic, and product
-branding are outside scope.
+This decision and its neutral core implementation do not authorize deployment,
+DNS changes, provider configuration, production traffic, or a claim of
+production readiness. Personal domains, alias-state migration, recovery logic,
+and product branding are outside scope.
 
 ## Decision
 
@@ -237,13 +237,15 @@ Events are authenticated, deduplicated by provider event ID, accepted out of
 order, and correlated using an opaque edge tag when supported or the accepted
 provider message ID otherwise. A bounce adapter may re-inject an RFC 3464 DSN
 with null envelope sender to the stored original VERP, which the current handler
-already understands. Complaints require a future provider-neutral internal hook
-or generic authenticated ARF handler; the existing Hotmail/Yahoo-only code is not
-sufficient. That missing surface blocks readiness.
+already understands. The private neutral feedback service now applies hard
+bounces and complaints without accepting provider-native event bodies. Existing
+direct DSN and Hotmail/Yahoo complaint paths remain unchanged.
 
 ## Exact integration and configuration surfaces
 
-No item in this section has been implemented by this decision.
+The receipt, correlation, feedback, and private-network pieces below are now
+implemented on the SimpleLogin side. Provider adapters, public MTA policy, and
+provider qualification remain outside this repository.
 
 1. **Inbound DNS and MTA:** keep alias-domain MX on operator-controlled hosts.
    Terminate public SMTP, STARTTLS, connection limits, recipient validation,

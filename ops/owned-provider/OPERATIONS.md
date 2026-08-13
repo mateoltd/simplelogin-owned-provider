@@ -22,7 +22,7 @@ deployment RPO and measured growth; do not remove freshness alerts.
 
 ## Structured logs
 
-Application, SMTP, job-runner, observer, and synthetic output is one JSON
+Application, SMTP, mail-feedback, job-runner, observer, and synthetic output is one JSON
 object per bounded line. Known environment and mounted-file secret values are
 replaced, authorization-like fields are redacted, and email addresses/IPs are
 deterministically pseudonymized. Collect stdout/stderr with a restricted log
@@ -40,6 +40,15 @@ used by the synthetic and export tests suppress duplicate ready events. The
 contained `queue-drill` removes the SMTP sink, proves a failed taken attempt,
 ages it past the retry boundary, restores SMTP, and proves completion on the
 second attempt.
+
+## Mail-edge core bridge
+
+The private service on `mail-feedback:7781` accepts only HMAC-authenticated
+neutral records. It deduplicates feedback event IDs, persists replay nonces,
+accepts feedback before message correlation, and applies pending hard-bounce or
+complaint outcomes when the mapping arrives. `GET /v1/ingress/{ingress_id}`
+lets the edge reconcile an SMTP DATA acknowledgement loss without resending an
+ambiguous delivery.
 
 Terminal job errors require payload-specific review before requeue. Never mass
 reset jobs without confirming the handler is idempotent and the underlying

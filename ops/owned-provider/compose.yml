@@ -35,13 +35,13 @@ x-app: &app
     DB_CONN_NAME: simplelogin-owned-provider
     DB_PASSWORD_FILE: /run/secrets/postgres_password
     MEM_STORE_URI: redis://redis:6379/0
-    POSTFIX_SERVER: ${OWNED_PROVIDER_SMTP_RELAY_HOST:-mailpit}
-    POSTFIX_BACKUP_SERVERS: ${OWNED_PROVIDER_SMTP_BACKUP_RELAYS:-}
-    POSTFIX_PORT: ${OWNED_PROVIDER_SMTP_RELAY_PORT:-1025}
+    POSTFIX_SERVER: ${OWNED_PROVIDER_SMTP_RELAY_HOST:-mail-edge-smtp}
+    POSTFIX_PORT: ${OWNED_PROVIDER_SMTP_RELAY_PORT:-2525}
     POSTFIX_CONNECT_TIMEOUT: "2"
     POSTFIX_TIMEOUT: "5"
     LOCAL_FILE_UPLOAD: "1"
     SAVE_UNSENT_DIR: /code/var/unsent
+    STORE_TRANSACTIONAL_EMAILS: "1"
     DISABLE_REGISTRATION: "1"
     DISABLE_ONBOARDING: "1"
     DISABLE_ALIAS_SUFFIX: "1"
@@ -50,6 +50,9 @@ x-app: &app
     ALIAS_CREATE_RATE_LIMIT_PAID: ${OWNED_PROVIDER_ALIAS_CREATE_RATE_LIMIT_PAID:-500,60:10000,3600}
     MAX_NB_EMAIL_FREE_PLAN: "5"
     SMTP_SIZE_LIMIT: ${OWNED_PROVIDER_SMTP_SIZE_LIMIT:-26214400}
+    MAIL_INGRESS_LEASE_SECONDS: ${OWNED_PROVIDER_MAIL_INGRESS_LEASE_SECONDS:-300}
+    MAIL_EDGE_AUTH_MAX_AGE_SECONDS: ${OWNED_PROVIDER_MAIL_EDGE_AUTH_MAX_AGE_SECONDS:-300}
+    MAIL_EDGE_AUTH_FUTURE_SKEW_SECONDS: ${OWNED_PROVIDER_MAIL_EDGE_AUTH_FUTURE_SKEW_SECONDS:-30}
     DKIM_PRIVATE_KEY_PATH: /run/secrets/dkim_private_key
     FLASK_SECRET_FILE: /run/secrets/flask_secret
     PARTNER_API_TOKEN_SECRET_FILE: /run/secrets/partner_api_token_secret
@@ -160,11 +163,14 @@ services:
     image: axllent/mailpit:v1.30.0@sha256:0059ef81e492a7192af3816281eed6859eb078bd7bdc58b76757c13e10e53a7d
     profiles: ["test"]
     restart: unless-stopped
-    command: ["--database", "/data/mailpit.db", "--max", "2000"]
+    command: ["--database", "/data/mailpit.db", "--max", "2000", "--smtp", "0.0.0.0:2525"]
     volumes:
       - mailpit:/data
     ports:
       - 127.0.0.1:${OWNED_PROVIDER_MAILPIT_HTTP_PORT:-18025}:8025
+    networks:
+      default:
+        aliases: [mail-edge-smtp]
     healthcheck:
       test: ["CMD", "/mailpit", "readyz"]
       interval: 2s
@@ -255,10 +261,47 @@ services:
     <<: *app
     restart: unless-stopped
     command: ["python", "ops/owned-provider/scripts/log_wrapper.py", "--service", "email", "--", "python", "email_handler.py"]
-    ports:
-      - ${OWNED_PROVIDER_SMTP_BIND:-127.0.0.1}:${OWNED_PROVIDER_SMTP_PORT:-20381}:20381
+    expose: ["20381"]
     healthcheck:
       test: ["CMD", "python", "ops/owned-provider/scripts/process_health.py", "/tmp/service.pid"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  mail-feedback:
+    <<: *app
+    restart: unless-stopped
+    environment:
+      <<: *app_environment
+      MAIL_EDGE_HMAC_KEYS_FILE: /run/secrets/mail_edge_hmac_keys
+    secrets:
+      - postgres_password
+      - flask_secret
+      - partner_api_token_secret
+      - recovery_code_hmac_secret
+      - alias_transfer_token_secret
+      - verp_email_secret
+      - master_enc_key_hex
+      - mac_key_hex
+      - abuser_hkdf_salt
+      - dkim_private_key
+      - mail_edge_hmac_keys
+    command:
+      - gunicorn
+      - app.mail_feedback:create_app()
+      - --bind
+      - 0.0.0.0:7781
+      - --workers
+      - "2"
+      - --timeout
+      - "30"
+      - --access-logfile
+      - '-'
+      - --error-logfile
+      - '-'
+    expose: ["7781"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7781/health', timeout=2).read()"]
       interval: 5s
       timeout: 3s
       retries: 30
@@ -282,6 +325,8 @@ services:
       OWNED_PROVIDER_SMTP_HOST: email
       OWNED_PROVIDER_SMTP_PORT: "20381"
       OWNED_PROVIDER_MAILPIT_URL: http://mailpit:8025
+      OWNED_PROVIDER_MAIL_FEEDBACK_URL: http://mail-feedback:7781
+      OWNED_PROVIDER_MAIL_EDGE_HMAC_KEYS_FILE: /run/secrets/mail_edge_hmac_keys
       OWNED_PROVIDER_CUSTOM_DOMAIN: ${OWNED_PROVIDER_E2E_DOMAIN:-mask.example.org}
       OWNED_PROVIDER_E2E_DOMAIN: ${OWNED_PROVIDER_E2E_DOMAIN:-mask.example.org}
       OWNED_PROVIDER_E2E_MAILBOX_DOMAIN: ${OWNED_PROVIDER_E2E_MAILBOX_DOMAIN:-gmail.com}
@@ -298,11 +343,14 @@ services:
       - abuser_hkdf_salt
       - admin_password
       - dkim_private_key
+      - mail_edge_hmac_keys
     command: ["python", "ops/owned-provider/scripts/e2e.py"]
     depends_on:
       app:
         condition: service_healthy
       email:
+        condition: service_healthy
+      mail-feedback:
         condition: service_healthy
       job-runner:
         condition: service_healthy
@@ -375,6 +423,8 @@ secrets:
     file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/admin_password
   dkim_private_key:
     file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/dkim_private_key
+  mail_edge_hmac_keys:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_hmac_keys
 
 volumes:
   postgres:

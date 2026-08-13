@@ -49,7 +49,7 @@ def put(marker: str, phase: str):
     message["To"] = os.environ["ADMIN_EMAIL"]
     message["Subject"] = f"restore-{marker}"
     message.set_content(phase)
-    with smtplib.SMTP("mailpit", 1025, timeout=10) as smtp:
+    with smtplib.SMTP("mail-edge-smtp", 2525, timeout=10) as smtp:
         smtp.send_message(message)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline and not message_exists(message["Subject"]):
