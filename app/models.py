@@ -3671,6 +3671,124 @@ class MessageIDMatching(Base, ModelMixin):
     email_log = orm.relationship("EmailLog")
 
 
+class MailIngressReceiptState(EnumE):
+    processing = 0
+    completed = 1
+    rejected = 2
+    unknown = 3
+
+
+class MailIngressReceipt(Base, ModelMixin):
+    """Durable, idempotent result of one mail-edge SMTP delivery."""
+
+    __tablename__ = "mail_ingress_receipt"
+
+    ingress_id = sa.Column(sa.String(128), nullable=False, unique=True)
+    message_digest = sa.Column(sa.String(64), nullable=False)
+    state = sa.Column(
+        sa.Integer,
+        nullable=False,
+        default=MailIngressReceiptState.processing.value,
+        server_default=str(MailIngressReceiptState.processing.value),
+    )
+    lease_token = sa.Column(sa.String(64), nullable=True)
+    lease_expires_at = sa.Column(ArrowType, nullable=True)
+    smtp_status = sa.Column(sa.String(512), nullable=True)
+    attempt_count = sa.Column(sa.Integer, nullable=False, default=1, server_default="1")
+    completed_at = sa.Column(ArrowType, nullable=True)
+
+    __table_args__ = (
+        sa.Index("ix_mail_ingress_receipt_state_lease", "state", "lease_expires_at"),
+    )
+
+    @property
+    def state_name(self) -> str:
+        return MailIngressReceiptState(self.state).name
+
+
+class TransportMessageIDMatching(Base, ModelMixin):
+    """Provider-neutral transport correlation for one outbound edge delivery."""
+
+    __tablename__ = "transport_message_id_matching"
+
+    edge_delivery_id = sa.Column(sa.String(128), nullable=False, unique=True)
+    provider_message_id = sa.Column(sa.String(512), nullable=True, unique=True)
+    provider_visible_message_id = sa.Column(sa.String(1024), nullable=True, unique=True)
+    submitted_message_id = sa.Column(sa.String(1024), nullable=False)
+    original_message_id = sa.Column(sa.String(1024), nullable=False)
+    original_envelope_from = sa.Column(sa.String(512), nullable=False)
+    recipient = sa.Column(sa.String(512), nullable=False)
+    email_log_id = sa.Column(
+        sa.ForeignKey("email_log.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    transactional_email_id = sa.Column(
+        sa.ForeignKey("transactional_email.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    hard_bounce_applied_at = sa.Column(ArrowType, nullable=True)
+    complaint_applied_at = sa.Column(ArrowType, nullable=True)
+
+    email_log = orm.relationship("EmailLog")
+    transactional_email = orm.relationship("TransactionalEmail")
+
+
+class MailFeedbackReceiptState(EnumE):
+    pending = 0
+    applied = 1
+    ignored = 2
+    rejected = 3
+
+
+class MailFeedbackReceipt(Base, ModelMixin):
+    """Durable deduplication and application state for a neutral edge event."""
+
+    __tablename__ = "mail_feedback_receipt"
+
+    provider_event_id = sa.Column(sa.String(256), nullable=False, unique=True)
+    payload_digest = sa.Column(sa.String(64), nullable=False)
+    edge_delivery_id = sa.Column(sa.String(128), nullable=True, index=True)
+    provider_message_id = sa.Column(sa.String(512), nullable=True, index=True)
+    event_type = sa.Column(sa.String(32), nullable=False)
+    recipient = sa.Column(sa.String(512), nullable=False)
+    smtp_status = sa.Column(sa.String(512), nullable=True)
+    diagnostic = sa.Column(sa.String(2048), nullable=True)
+    occurred_at = sa.Column(ArrowType, nullable=False)
+    state = sa.Column(
+        sa.Integer,
+        nullable=False,
+        default=MailFeedbackReceiptState.pending.value,
+        server_default=str(MailFeedbackReceiptState.pending.value),
+    )
+    transport_matching_id = sa.Column(
+        sa.ForeignKey("transport_message_id_matching.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    applied_at = sa.Column(ArrowType, nullable=True)
+    rejection_reason = sa.Column(sa.String(256), nullable=True)
+
+    transport_matching = orm.relationship("TransportMessageIDMatching")
+
+    @property
+    def state_name(self) -> str:
+        return MailFeedbackReceiptState(self.state).name
+
+
+class MailEdgeReplayNonce(Base, ModelMixin):
+    """Persisted HMAC nonce so replays remain blocked across process restarts."""
+
+    __tablename__ = "mail_edge_replay_nonce"
+
+    key_id = sa.Column(sa.String(64), nullable=False)
+    nonce = sa.Column(sa.String(128), nullable=False)
+    expires_at = sa.Column(ArrowType, nullable=False, index=True)
+
+    __table_args__ = (
+        sa.UniqueConstraint("key_id", "nonce", name="uq_mail_edge_replay_key_nonce"),
+    )
+
+
 class DeletedDirectory(Base, ModelMixin):
     """To avoid directory from being reused"""
 
