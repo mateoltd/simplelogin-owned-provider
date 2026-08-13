@@ -146,7 +146,8 @@ ENFORCE_SPF = "ENFORCE_SPF" in os.environ
 
 # override postfix server locally
 POSTFIX_SERVERS = get_env_csv("POSTFIX_SERVER", "240.0.0.1")
-POSTFIX_BACKUP_SERVERS = get_env_csv("POSTFIX_BACKUP_SERVERS", "")
+if len(POSTFIX_SERVERS) != 1:
+    raise RuntimeError("POSTFIX_SERVER must configure exactly one SMTP endpoint")
 
 DISABLE_REGISTRATION = "DISABLE_REGISTRATION" in os.environ
 
@@ -162,6 +163,22 @@ else:
 POSTFIX_PORT = int(os.environ.get("POSTFIX_PORT", default_postfix_port))
 POSTFIX_TIMEOUT = int(os.environ.get("POSTFIX_TIMEOUT", 3))
 POSTFIX_CONNECT_TIMEOUT = float(os.environ.get("POSTFIX_CONNECT_TIMEOUT", 1))
+
+# Provider-neutral mail-edge core bridge. Keys are keyed by rotation ID and are
+# supplied only to the private feedback service in the owned deployment.
+MAIL_EDGE_HMAC_KEYS = sl_getenv("MAIL_EDGE_HMAC_KEYS", default_factory=dict)
+MAIL_EDGE_AUTH_MAX_AGE_SECONDS = int(
+    os.environ.get("MAIL_EDGE_AUTH_MAX_AGE_SECONDS", 300)
+)
+MAIL_EDGE_AUTH_FUTURE_SKEW_SECONDS = int(
+    os.environ.get("MAIL_EDGE_AUTH_FUTURE_SKEW_SECONDS", 30)
+)
+MAIL_EDGE_MAX_REQUEST_BYTES = int(os.environ.get("MAIL_EDGE_MAX_REQUEST_BYTES", 65536))
+MAIL_INGRESS_LEASE_SECONDS = int(os.environ.get("MAIL_INGRESS_LEASE_SECONDS", 300))
+MAIL_EDGE_TRUSTED_NETWORKS = get_env_csv(
+    "MAIL_EDGE_TRUSTED_NETWORKS",
+    "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7",
+)
 
 # ["domain1.com", "domain2.com"]
 OTHER_ALIAS_DOMAINS = sl_getenv("OTHER_ALIAS_DOMAINS", list)

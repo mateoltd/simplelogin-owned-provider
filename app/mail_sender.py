@@ -4,7 +4,6 @@ import base64
 import email
 import json
 import os
-import random
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
@@ -100,7 +99,6 @@ class MailSender:
     def __init__(self):
         self._pool: Optional[ThreadPoolExecutor] = None
         self._store_emails = False
-        self._randomize_smtp_hosts = True
         self._emails_sent: List[SendRequest] = []
 
     def store_emails_instead_of_sending(self, store_emails: bool = True):
@@ -146,11 +144,10 @@ class MailSender:
             return True
 
     def _send_to_smtp(self, send_request: SendRequest, retries: int) -> bool:
-        servers_to_try = config.POSTFIX_SERVERS.copy()
-        if self._randomize_smtp_hosts:
-            random.shuffle(servers_to_try)
-        if config.POSTFIX_BACKUP_SERVERS:
-            servers_to_try.extend(config.POSTFIX_BACKUP_SERVERS)
+        # A second endpoint could turn an ambiguous submission into duplicate
+        # delivery. Provider changes are an explicit operator action at the
+        # mail edge, never an application-side retry across relays.
+        servers_to_try = config.POSTFIX_SERVERS[:1]
         servers_tried = 0
         for server_hostname in servers_to_try:
             servers_tried += 1
@@ -218,6 +215,15 @@ class MailSender:
                 send_request.msg[headers.TO],
                 send_request.msg[headers.CC],
             )
+            # Edge-reserved headers are hop metadata, never user-controlled
+            # content and never part of the message submitted for delivery.
+            for index in reversed(range(len(send_request.msg._headers))):
+                if (
+                    send_request.msg._headers[index][0]
+                    .lower()
+                    .startswith("x-simplelogin-edge-")
+                ):
+                    del send_request.msg._headers[index]
             smtp.sendmail(
                 send_request.envelope_from,
                 send_request.envelope_to,

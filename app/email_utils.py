@@ -1552,7 +1552,7 @@ def spf_pass(
 @cached(cache=TTLCache(maxsize=2, ttl=20))
 def get_smtp_server():
     LOG.d("get a smtp server")
-    server = random.choice(config.POSTFIX_SERVERS)
+    server = config.POSTFIX_SERVERS[0]
     if config.POSTFIX_SUBMISSION_TLS:
         smtp = SMTP(server, 587)
         smtp.starttls()

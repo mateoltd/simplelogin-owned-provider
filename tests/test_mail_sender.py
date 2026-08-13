@@ -127,7 +127,7 @@ def test_mail_sender_save_unsent_to_disk(server_fn):
         config.NOT_SEND_EMAIL = True
 
 
-def test_mail_sender_try_several_servers():
+def test_mail_sender_does_not_try_an_automatic_fallback():
     port_closed = closed_dummy_server()
     port_ok = smtp_response_server("250 Ok")()
     original_postfix_server = config.POSTFIX_SERVERS
@@ -135,28 +135,12 @@ def test_mail_sender_try_several_servers():
     config.NOT_SEND_EMAIL = False
     config.POSTFIX_SUBMISSION_TLS = False
     send_request = create_dummy_send_request()
-    mail_sender._randomize_smtp_hosts = False
     try:
-        assert mail_sender.send(send_request, 0)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config.SAVE_UNSENT_DIR = temp_dir
+            assert not mail_sender.send(send_request, 0)
     finally:
         config.POSTFIX_SERVERS = original_postfix_server
-        config.NOT_SEND_EMAIL = True
-
-
-def test_mail_sender_try_backup_postfix():
-    port_closed = closed_dummy_server()
-    port_ok = smtp_response_server("250 Ok")()
-    original_postfix_server = config.POSTFIX_SERVERS
-    config.POSTFIX_SERVERS = [f"localhost:{port_closed}"]
-    config.POSTFIX_BACKUP_SERVERS = [f"localhost:{port_ok}"]
-    config.NOT_SEND_EMAIL = False
-    config.POSTFIX_SUBMISSION_TLS = False
-    send_request = create_dummy_send_request()
-    try:
-        assert mail_sender.send(send_request, 0)
-    finally:
-        config.POSTFIX_SERVERS = original_postfix_server
-        config.POSTFIX_BACKUP_SERVERS = []
         config.NOT_SEND_EMAIL = True
 
 

@@ -33,6 +33,8 @@ It should contain the following info:
 
 import argparse
 import email
+import hashlib
+import ipaddress
 import time
 import uuid
 from email import encoders
@@ -126,6 +128,14 @@ from app.handler.unsubscribe_generator import UnsubscribeGenerator
 from app.handler.unsubscribe_handler import UnsubscribeHandler
 from app.log import LOG, set_message_id
 from app.mail_sender import sl_sendmail
+from app.mail_feedback import (
+    IngressConflict,
+    claim_ingress_receipt,
+    extract_ingress_id,
+    finish_ingress_receipt,
+    mark_ingress_unknown,
+    replace_transport_message_ids,
+)
 from app.mailbox_utils import (
     get_mailbox_for_reply_phase,
     quarantine_disabled_mailbox_email,
@@ -2052,6 +2062,11 @@ def handle(envelope: Envelope, msg: Message) -> str:
     envelope.mail_from = mail_from
     envelope.rcpt_tos = rcpt_tos
 
+    # A managed transport may expose a different RFC 5322 Message-ID. Normalize
+    # only IDs previously registered by the neutral edge, before the existing
+    # SimpleLogin threading translation runs.
+    replace_transport_message_ids(msg)
+
     # some emails don't have this header, set the default value (7bit) in this case
     if headers.CONTENT_TRANSFER_ENCODING not in msg:
         LOG.i("Set CONTENT_TRANSFER_ENCODING")
@@ -2378,10 +2393,43 @@ def handle_out_of_office_forward_phase(email_log, envelope, msg, rcpt_tos):
 
 
 class MailHandler:
+    @staticmethod
+    def _trusted_edge_session(session) -> bool:
+        try:
+            peer_address = ipaddress.ip_address(session.peer[0])
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return False
+        try:
+            networks = [
+                ipaddress.ip_network(value, strict=True)
+                for value in config.MAIL_EDGE_TRUSTED_NETWORKS
+            ]
+        except ValueError:
+            LOG.e("MAIL_EDGE_TRUSTED_NETWORKS contains an invalid network")
+            return False
+        return any(peer_address in network for network in networks)
+
     async def handle_DATA(self, server, session, envelope: Envelope):
         msg = email.message_from_bytes(envelope.original_content)
         try:
+            ingress_id = extract_ingress_id(
+                msg, trusted_edge=self._trusted_edge_session(session)
+            )
+        except IngressConflict:
+            return status.E527
+        ingress_claim = None
+        if ingress_id:
+            message_digest = hashlib.sha256(envelope.original_content).hexdigest()
+            try:
+                ingress_claim = claim_ingress_receipt(ingress_id, message_digest)
+            except IngressConflict:
+                return status.E527
+            if not ingress_claim.should_process:
+                return ingress_claim.smtp_status or status.E408
+        try:
             ret = self._handle(envelope, msg)
+            if ingress_claim:
+                finish_ingress_receipt(ingress_id, ingress_claim.lease_token, ret)
             return ret
 
         # happen if reverse-alias is used during the forward phase
@@ -2396,7 +2444,10 @@ class MailHandler:
                 msg[headers.FROM],
                 msg[headers.TO],
             )
-            return status.E524
+            ret = status.E524
+            if ingress_claim:
+                finish_ingress_receipt(ingress_id, ingress_claim.lease_token, ret)
+            return ret
         except (VERPReply, VERPForward, VERPTransactional) as e:
             LOG.w(
                 "email handling fail with error:%s "
@@ -2407,7 +2458,10 @@ class MailHandler:
                 msg[headers.FROM],
                 msg[headers.TO],
             )
-            return status.E213
+            ret = status.E213
+            if ingress_claim:
+                finish_ingress_receipt(ingress_id, ingress_claim.lease_token, ret)
+            return ret
         except Exception as e:
             LOG.e(
                 "email handling fail with error:%s "
@@ -2421,6 +2475,8 @@ class MailHandler:
                     envelope, file_name_prefix=e.__class__.__name__
                 ),  # todo: remove
             )
+            if ingress_claim:
+                mark_ingress_unknown(ingress_id, ingress_claim.lease_token)
             return status.E404
 
     @newrelic.agent.background_task()
