@@ -6,7 +6,10 @@ repository_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
 runtime_dir="${OWNED_PROVIDER_RUNTIME_DIR:-$repository_root/.owned-provider}"
 config_file="${OWNED_PROVIDER_CONFIG_FILE:-$runtime_dir/config.env}"
 compose_file="$script_dir/compose.yml"
+mail_edge_compose_file="$script_dir/compose.mail-edge-conformance.yml"
 project_name="simplelogin-owned-provider"
+conformance_project_name="mail-edge-conformance-${repository_root##*/}"
+conformance_project_name="${conformance_project_name//[^A-Za-z0-9_-]/-}"
 source_commit="$(tr -d '[:space:]' <"$script_dir/UPSTREAM_COMMIT")"
 image="simplelogin-owned-provider:$source_commit"
 
@@ -100,6 +103,13 @@ compose() {
     --file "$compose_file" "${profile[@]}" "$@"
 }
 
+conformance_compose() {
+  MAIL_EDGE_CONFORMANCE_PROJECT="$conformance_project_name" \
+    docker compose --project-name "$conformance_project_name" \
+    --env-file "$config_file" --file "$compose_file" \
+    --file "$mail_edge_compose_file" --profile test --profile conformance "$@"
+}
+
 is_test_mode() {
   [[ "${OWNED_PROVIDER_MODE:-test}" == "test" ]]
 }
@@ -136,6 +146,17 @@ ensure_volume() {
   if ! docker volume inspect "$volume" >/dev/null 2>&1; then
     docker volume create \
       --label "com.docker.compose.project=$project_name" \
+      --label "com.docker.compose.volume=$logical_name" \
+      "$volume" >/dev/null
+  fi
+}
+
+ensure_conformance_volume() {
+  local logical_name="$1"
+  local volume="${conformance_project_name}_${logical_name}"
+  if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    docker volume create \
+      --label "com.docker.compose.project=$conformance_project_name" \
       --label "com.docker.compose.volume=$logical_name" \
       "$volume" >/dev/null
   fi
@@ -557,6 +578,63 @@ run_upstream_check() {
     --repository "$repository_root" --candidate upstream/master --output "$output"
 }
 
+run_mail_edge_conformance() {
+  if ! is_test_mode; then
+    printf 'mail-edge conformance is restricted to contained test mode\n' >&2
+    return 1
+  fi
+  local adapter_name="${1:-mailgun}"
+  local adapter_version="${2:-messages-mime-v1}"
+  local stamp evidence source_revision run_status
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  evidence="$runtime_dir/evidence/mail-edge-local-$adapter_name-$stamp.json"
+  source_revision="$(git -C "$repository_root" rev-parse HEAD)"
+  conformance_compose --profile build build upstream-image
+  conformance_compose build app
+  conformance_compose up --detach --wait postgres redis mailpit
+  ensure_conformance_volume uploads
+  ensure_conformance_volume unsent
+  docker run --rm --platform linux/amd64 --user 0 --entrypoint sh \
+    -v "${conformance_project_name}_uploads:/code/static/upload" \
+    -v "${conformance_project_name}_unsent:/code/var/unsent" \
+    "$image" -c 'chown -R 65532:65532 /code/static/upload /code/var/unsent'
+  conformance_compose --profile tools run --rm migrate
+  conformance_compose --profile tools run --rm ops-migrate
+  conformance_compose --profile tools run --rm initialize
+  conformance_compose --profile tools run --rm bootstrap
+  set +e
+  OWNED_PROVIDER_SMTP_RELAY_HOST=mail-edge-fixture \
+    OWNED_PROVIDER_SMTP_RELAY_PORT=1025 \
+    conformance_compose up --detach --wait \
+      app email job-runner mail-edge-provider mail-edge-fixture
+  run_status=$?
+  if [[ "$run_status" -eq 0 ]]; then
+    conformance_compose --profile tools run --rm --no-deps \
+      -v "$runtime_dir/evidence:/evidence" \
+      -e OWNED_PROVIDER_BASE_URL=http://app:7777 \
+      -e OWNED_PROVIDER_SMTP_HOST=email \
+      -e OWNED_PROVIDER_SMTP_PORT=20381 \
+      -e OWNED_PROVIDER_MAILPIT_URL=http://mailpit:8025 \
+      -e OWNED_PROVIDER_MAIL_EDGE_FIXTURE_URL=http://mail-edge-provider:8080 \
+      -e MAIL_EDGE_EVIDENCE_OUTPUT="/evidence/$(basename "$evidence")" \
+      -e MAIL_EDGE_SOURCE_REVISION="$source_revision" \
+      -e MAIL_EDGE_ADAPTER_NAME="$adapter_name" \
+      -e MAIL_EDGE_ADAPTER_VERSION="$adapter_version" \
+      e2e python ops/owned-provider/scripts/mail_edge_e2e.py
+    run_status=$?
+  fi
+  if [[ "$run_status" -ne 0 ]]; then
+    conformance_compose logs --no-color --tail 200 \
+      app email mail-edge-fixture mail-edge-provider mailpit >&2
+  fi
+  conformance_compose down --remove-orphans >/dev/null
+  set -e
+  if [[ "$run_status" -ne 0 ]]; then
+    return "$run_status"
+  fi
+  printf 'mail-edge local evidence: %s\n' "$evidence"
+}
+
 usage() {
   sed -n 's/^# @command /  /p' "$0"
 }
@@ -627,6 +705,10 @@ case "${1:-}" in
       --email "$OWNED_PROVIDER_ADMIN_EMAIL" \
       --password-file "$runtime_dir/secrets/admin_password" \
       --target-dir "$runtime_dir/sdk-target"
+    ;;
+  # @command mail-edge-conformance [ADAPTER VERSION]  Run contained mail-edge qualification
+  mail-edge-conformance)
+    run_mail_edge_conformance "${2:-mailgun}" "${3:-messages-mime-v1}"
     ;;
   # @command audit                        Audit provenance, secrets, config, and hardening
   audit)

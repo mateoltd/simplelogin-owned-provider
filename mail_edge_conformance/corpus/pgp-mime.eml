@@ -1,0 +1,26 @@
+From: PGP Author <pgp@sender.test>
+To: PGP Reader <pgp@receiver.test>
+Subject: PGP MIME opaque fixture
+Date: Thu, 13 Aug 2026 12:07:00 +0000
+Message-ID: <pgp-mime-1@sender.test>
+MIME-Version: 1.0
+Content-Type: multipart/encrypted; protocol="application/pgp-encrypted";
+ boundary="pgp-encrypted-20260813"
+
+--pgp-encrypted-20260813
+Content-Type: application/pgp-encrypted
+Content-Description: PGP/MIME version identification
+
+Version: 1
+--pgp-encrypted-20260813
+Content-Type: application/octet-stream; name="encrypted.asc"
+Content-Description: OpenPGP encrypted message
+Content-Disposition: inline; filename="encrypted.asc"
+
+-----BEGIN PGP MESSAGE-----
+Version: Mail Edge Conformance Fixture
+
+ww0ECQMI1deterministicfixture0g0B9nRlc3Qtb25seS1vcGFxdWUtYnl0ZXM=
+=edge
+-----END PGP MESSAGE-----
+--pgp-encrypted-20260813--

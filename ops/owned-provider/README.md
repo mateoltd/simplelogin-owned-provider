@@ -18,6 +18,7 @@ Requirements: Docker Compose, Git, curl, OpenSSL, Python 3, and `shasum`.
 ops/owned-provider/bin/owned-provider init
 ops/owned-provider/bin/owned-provider up
 ops/owned-provider/bin/owned-provider e2e
+ops/owned-provider/bin/owned-provider mail-edge-conformance
 ops/owned-provider/bin/owned-provider drill
 ```
 
@@ -29,6 +30,12 @@ Nothing publishes mail or changes DNS.
 Local endpoints are API `http://127.0.0.1:17777`, SMTP `127.0.0.1:20381`,
 readiness/metrics `http://127.0.0.1:19090`, and Mailpit
 `http://127.0.0.1:18025`.
+
+`mail-edge-conformance` temporarily inserts deterministic private edge and
+provider fixtures between SimpleLogin and Mailpit, proves semantic MIME and a
+four-message reverse-alias thread, writes activation-policy evidence, restores
+the configured relay, and stops the fixtures. See
+[MAIL_EDGE_QUALIFICATION.md](MAIL_EDGE_QUALIFICATION.md).
 
 ## Production configuration
 
@@ -72,6 +79,7 @@ Runbooks:
 - [Configuration and secrets](CONFIGURATION.md)
 - [Mail and DNS preflight](MAIL_DNS.md)
 - [Mail-edge architecture decision](MAIL_EDGE_ARCHITECTURE.md)
+- [Mail-edge qualification](MAIL_EDGE_QUALIFICATION.md)
 - [Operations, metrics, alerts, and lifecycle](OPERATIONS.md)
 - [Disaster recovery](DISASTER_RECOVERY.md)
 - [Capacity and scaling](CAPACITY.md)

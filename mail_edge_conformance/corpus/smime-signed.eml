@@ -1,0 +1,23 @@
+From: S/MIME Signer <smime-signer@sender.test>
+To: S/MIME Reader <smime@receiver.test>
+Subject: S/MIME signed opaque fixture
+Date: Thu, 13 Aug 2026 12:09:00 +0000
+Message-ID: <smime-signed-1@sender.test>
+MIME-Version: 1.0
+Content-Type: multipart/signed; protocol="application/pkcs7-signature";
+ micalg=sha-256; boundary="smime-signed-20260813"
+
+--smime-signed-20260813
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Signed content must remain byte-equivalent after decoding.
+--smime-signed-20260813
+Content-Type: application/pkcs7-signature; name="smime.p7s"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="smime.p7s"
+
+MIIBCgYJKoZIhvcNAQcCoIH8MIH5AgEBMQswCQYFKw4DAhoFADALBgkqhkiG9w0BBwEx
+DzANBglghkgBZQMEAgEFADANBgkqhkiG9w0BAQsFAARAZGV0ZXJtaW5pc3RpYy1vcGFx
+dWUtc2lnbmF0dXJlLWZpeHR1cmU=
+--smime-signed-20260813--

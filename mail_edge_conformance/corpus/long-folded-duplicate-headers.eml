@@ -1,0 +1,18 @@
+From: Header Author <headers@sender.test>
+To: Header Reader <reader@receiver.test>
+Subject: This is a deliberately long subject that is folded across physical lines to prove that semantic comparison unfolds header values without forgiving mutation of the actual logical value
+ continuation segment with deterministic words alpha beta gamma delta epsilon zeta eta theta
+Date: Thu, 13 Aug 2026 12:04:00 +0000
+Message-ID: <headers-1@sender.test>
+X-Conformance-Duplicate: first-value
+X-Conformance-Duplicate: second-value
+X-Conformance-Long: alpha beta gamma delta epsilon zeta eta theta iota kappa
+ lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega
+X-Conformance-Order: one
+X-Conformance-Order: two
+X-Conformance-Order: three
+MIME-Version: 1.0
+Content-Type: text/plain; charset=us-ascii
+Content-Transfer-Encoding: 7bit
+
+Header folding and duplicate ordering are semantic fixtures.

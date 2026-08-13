@@ -1,0 +1,24 @@
+From: Scheduler <scheduler@sender.test>
+To: Attendee <attendee@receiver.test>
+Subject: Calendar request fixture
+Date: Thu, 13 Aug 2026 12:01:00 +0000
+Message-ID: <calendar-1@sender.test>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="calendar-alt-20260813"
+
+--calendar-alt-20260813
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Qualification review at 14:00 UTC.
+--calendar-alt-20260813
+Content-Type: text/calendar; charset=utf-8; method=REQUEST; name="invite.ics"
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="invite.ics"
+
+QkVHSU46VkNBTEVOREFSDQpWRVJTSU9OOjIuMA0KUFJPRElEOi0vL01haWwgRWRnZSBD
+b25mb3JtYW5jZS8vRU4NCk1FVEhPRDpSRVFVRVNUDQpCRUdJTjpWRVZFTlQNClVJRDpj
+YWxlbmRhci0xQHNlbmRlci50ZXN0DQpEVFNUQVJUOjIwMjYwODEzVDE0MDAwMFoNCkRU
+RU5EOjIwMjYwODEzVDE0MzAwMFoNClNVTU1BUlk6TWFpbCBlZGdlIHF1YWxpZmljYXRp
+b24NCkVORDpWRVZFTlQNCkVORDpWQ0FMRU5EQVINCg==
+--calendar-alt-20260813--

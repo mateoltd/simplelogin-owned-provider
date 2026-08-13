@@ -1,0 +1,15 @@
+From: S/MIME Author <smime@sender.test>
+To: S/MIME Reader <smime@receiver.test>
+Subject: S/MIME enveloped opaque fixture
+Date: Thu, 13 Aug 2026 12:08:00 +0000
+Message-ID: <smime-enveloped-1@sender.test>
+MIME-Version: 1.0
+Content-Type: application/pkcs7-mime; smime-type=enveloped-data;
+ name="smime.p7m"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="smime.p7m"
+
+MIIBTAYJKoZIhvcNAQcDoIIBPTCCATkCAQAxCzAJBgUrDgMCGgUAMAsGCSqGSIb3DQEH
+ATAUBggqhkiG9w0DBwQIRWRnZVRlc3SAgZBvcGFxdWUtc21pbWUtY29udGVudC1mb3It
+c2VtYW50aWMtcHJlc2VydmF0aW9uLW9ubHktbm90LWEtcmVhbC1jcnlwdG9ncmFwaGlj
+LWVudmVsb3Bl

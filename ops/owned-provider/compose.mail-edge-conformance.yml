@@ -1,0 +1,21 @@
+services:
+  app:
+    ports: !reset []
+  email:
+    ports: !reset []
+  mailpit:
+    ports: !reset []
+  observer:
+    ports: !reset []
+
+volumes:
+  postgres:
+    name: ${MAIL_EDGE_CONFORMANCE_PROJECT:?set by owned-provider}_postgres
+  redis:
+    name: ${MAIL_EDGE_CONFORMANCE_PROJECT}_redis
+  uploads:
+    name: ${MAIL_EDGE_CONFORMANCE_PROJECT}_uploads
+  unsent:
+    name: ${MAIL_EDGE_CONFORMANCE_PROJECT}_unsent
+  mailpit:
+    name: ${MAIL_EDGE_CONFORMANCE_PROJECT}_mailpit

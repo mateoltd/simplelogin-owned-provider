@@ -1,0 +1,12 @@
+From: Contact One <contact@sender.test>
+To: Alias One <alias@receiver.test>
+Subject: Re: Stable reverse alias thread
+Date: Thu, 13 Aug 2026 13:02:00 +0000
+Message-ID: <thread-03@sender.test>
+In-Reply-To: <thread-02@receiver.test>
+References: <thread-01@sender.test> <thread-02@receiver.test>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Second contact-to-alias reply.

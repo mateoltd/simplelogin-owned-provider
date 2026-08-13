@@ -1,0 +1,15 @@
+From: Boundary Author <boundary@sender.test>
+To: Boundary Reader <boundary@receiver.test>
+Subject: Maximum MIME boundary token
+Date: Thu, 13 Aug 2026 12:06:00 +0000
+Message-ID: <boundary-token-1@sender.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed;
+ boundary="1234567890123456789012345678901234567890123456789012345678901234567890"
+
+--1234567890123456789012345678901234567890123456789012345678901234567890
+Content-Type: text/plain; charset=us-ascii
+Content-Transfer-Encoding: 7bit
+
+The MIME boundary token is exactly seventy characters.
+--1234567890123456789012345678901234567890123456789012345678901234567890--

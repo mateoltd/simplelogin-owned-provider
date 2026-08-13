@@ -1,6 +1,11 @@
 ARG BASE_IMAGE=simplelogin-owned-provider-upstream:local
 FROM ${BASE_IMAGE}
 
+# The qualification kit is an overlay concern and must be present even when the
+# pinned upstream image was built from an unchanged source snapshot.
+COPY mail_edge_conformance /code/mail_edge_conformance
+COPY ops/owned-provider/scripts/mail_edge_e2e.py /code/ops/owned-provider/scripts/mail_edge_e2e.py
+
 # uv installs the pinned interpreter beneath /root and links the virtualenv to
 # it. Permit traversal without making /root listable so the runtime can drop
 # privileges to the unprivileged UID used by Compose.

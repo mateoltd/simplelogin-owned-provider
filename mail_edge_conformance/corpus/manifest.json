@@ -1,0 +1,98 @@
+{
+  "schema": "mail-edge-eml-corpus/v1",
+  "cases": [
+    {
+      "id": "nested-alternative-related",
+      "file": "nested-alternative-related.eml",
+      "sha256": "bce63abdca13a6f74a0594efdb5dbea038405a1a0e004cc71663b91a5b119ff5",
+      "features": ["multipart-mixed", "multipart-alternative", "multipart-related", "content-id", "inline-image", "base64", "quoted-printable", "7bit"]
+    },
+    {
+      "id": "calendar-request",
+      "file": "calendar.eml",
+      "sha256": "5c0a069ebef95125111e8fd340f8996b318dd098c0164f7ae6a4a0df756d5858",
+      "features": ["text-calendar", "method-request", "inline-attachment", "base64"]
+    },
+    {
+      "id": "utf8-smtputf8",
+      "file": "utf8-smtputf8.eml",
+      "sha256": "927f778b1ab33ccad35c9810a3eec64e701ffbb1bbb3ca9d39da83d31fc1868a",
+      "features": ["utf8-headers", "utf8-body", "utf8-local-parts", "8bit"],
+      "smtp_utf8_required": true
+    },
+    {
+      "id": "all-transfer-encodings",
+      "file": "transfer-encodings.eml",
+      "sha256": "17c19163b55b2c3ddd00905b544533423629b1e408e0d40783d29694f25ad890",
+      "features": ["7bit", "8bit", "quoted-printable", "base64", "binary"]
+    },
+    {
+      "id": "long-folded-duplicate-headers",
+      "file": "long-folded-duplicate-headers.eml",
+      "sha256": "3a0361b9581262a213c7d7956dbe95dd9e11eb7f08ffac81fe43b7e781d90fc9",
+      "features": ["long-headers", "folded-headers", "duplicate-headers", "header-order"]
+    },
+    {
+      "id": "arbitrary-attachments",
+      "file": "arbitrary-attachments.eml",
+      "sha256": "1d4557a5b7c921738f2470c5ef5bf0e38ae36ae4732fb4f9631473d31718ef7e",
+      "features": ["rfc2231-filename", "zero-byte-attachment", "message-rfc822", "vendor-media-type"]
+    },
+    {
+      "id": "maximum-mime-boundary-token",
+      "file": "boundary-max-token.eml",
+      "sha256": "69e87ddd1356de8a3b818337a5c2e80add603c7e85c318f704743dc3b4de008f",
+      "features": ["mime-boundary-70", "folded-content-type"]
+    },
+    {
+      "id": "pgp-mime-encrypted",
+      "file": "pgp-mime.eml",
+      "sha256": "68d4420ce0bda2fbcc4b30f39654c54a8d760cb467a4994647f3448c299f8741",
+      "features": ["pgp-mime", "multipart-encrypted", "opaque-crypto"]
+    },
+    {
+      "id": "smime-enveloped",
+      "file": "smime-enveloped.eml",
+      "sha256": "5f84bb5ad472fa32f4cb67790f9e73ab808bc3f269aa389149111dcb7f89a839",
+      "features": ["smime", "pkcs7-mime", "opaque-crypto"]
+    },
+    {
+      "id": "smime-signed",
+      "file": "smime-signed.eml",
+      "sha256": "4894f4b77dba17e30b1f0464842e9d4f71ced0f5605c0642ae4ce68a8c343817",
+      "features": ["smime", "multipart-signed", "pkcs7-signature", "opaque-crypto"]
+    },
+    {
+      "id": "reverse-thread-01",
+      "file": "reverse-thread-01.eml",
+      "sha256": "22b9ace6a2f0c69df3971f4d61358c99d7a5f1abceea272803cedeaf3e4e0050",
+      "features": ["reverse-alias", "thread-root"],
+      "thread": "reverse-alias-four-message",
+      "sequence": 1
+    },
+    {
+      "id": "reverse-thread-02",
+      "file": "reverse-thread-02.eml",
+      "sha256": "0c27c596a21e6e3e5532da9c635dd0b37f7692a63cae640ba4ffd2b61056e236",
+      "features": ["reverse-alias", "in-reply-to", "references"],
+      "thread": "reverse-alias-four-message",
+      "sequence": 2
+    },
+    {
+      "id": "reverse-thread-03",
+      "file": "reverse-thread-03.eml",
+      "sha256": "b887b62036a73228424895f693426f3e14fecec199fe12572db8105368fbd6d5",
+      "features": ["reverse-alias", "in-reply-to", "references"],
+      "thread": "reverse-alias-four-message",
+      "sequence": 3
+    },
+    {
+      "id": "reverse-thread-04",
+      "file": "reverse-thread-04.eml",
+      "sha256": "9c31ffcf3da96727da130a630601a2aae808bde27743bdd00344115b630406d0",
+      "features": ["reverse-alias", "in-reply-to", "references"],
+      "thread": "reverse-alias-four-message",
+      "sequence": 4
+    }
+  ]
+}

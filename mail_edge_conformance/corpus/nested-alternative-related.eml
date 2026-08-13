@@ -1,0 +1,42 @@
+From: "Mira Sender" <mira@sender.test>
+To: "Rowan Receiver" <rowan@receiver.test>
+Subject: Nested alternative and related fixture
+Date: Thu, 13 Aug 2026 12:00:00 +0000
+Message-ID: <nested-related-1@sender.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer-mixed-20260813"
+
+--outer-mixed-20260813
+Content-Type: multipart/alternative; boundary="inner-alternative-20260813"
+
+--inner-alternative-20260813
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+The diagram is attached inline: caf=C3=A9 edge.
+--inner-alternative-20260813
+Content-Type: multipart/related; boundary="related-assets-20260813"; type="text/html"
+
+--related-assets-20260813
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: base64
+
+PGh0bWw+PGJvZHk+PHA+Y2Fmw6kgZWRnZTwvcD48aW1nIHNyYz0iY2lkOmVkZ2UtbG9n
+b0BzZW5kZXIudGVzdCIgYWx0PSJlZGdlIj48L2JvZHk+PC9odG1sPg==
+--related-assets-20260813
+Content-Type: image/png; name="edge.png"
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="edge.png"
+Content-ID: <edge-logo@sender.test>
+
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAgUB
+AO9WlV8AAAAASUVORK5CYII=
+--related-assets-20260813--
+--inner-alternative-20260813--
+--outer-mixed-20260813
+Content-Type: text/plain; charset=us-ascii
+Content-Disposition: attachment; filename="notes.txt"
+Content-Transfer-Encoding: 7bit
+
+Nested fixture notes.
+--outer-mixed-20260813--

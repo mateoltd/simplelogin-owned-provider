@@ -175,6 +175,68 @@ services:
     mem_limit: 512m
     cpus: 1.0
 
+  mail-edge-provider:
+    image: simplelogin-owned-provider:${SIMPLELOGIN_UPSTREAM_COMMIT:?set by owned-provider}
+    platform: linux/amd64
+    profiles: ["conformance"]
+    entrypoint: ["python", "-m", "mail_edge_conformance.fixture_server"]
+    command:
+      - provider
+      - --port
+      - "8080"
+      - --mailbox-host
+      - mailpit
+      - --mailbox-port
+      - "1025"
+    user: "65532:65532"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read()"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      mailpit:
+        condition: service_healthy
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+
+  mail-edge-fixture:
+    image: simplelogin-owned-provider:${SIMPLELOGIN_UPSTREAM_COMMIT:?set by owned-provider}
+    platform: linux/amd64
+    profiles: ["conformance"]
+    entrypoint: ["python", "-m", "mail_edge_conformance.fixture_server"]
+    command:
+      - edge
+      - --port
+      - "1025"
+      - --provider-url
+      - http://mail-edge-provider:8080
+    environment:
+      MAIL_EDGE_FIXTURE_SIZE_LIMIT: ${OWNED_PROVIDER_SMTP_SIZE_LIMIT:-26214400}
+    user: "65532:65532"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 1025), 2).close()"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      mail-edge-provider:
+        condition: service_healthy
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+
   migrate:
     <<: *app
     profiles: ["tools"]

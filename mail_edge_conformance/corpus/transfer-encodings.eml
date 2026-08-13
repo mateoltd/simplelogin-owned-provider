@@ -1,0 +1,36 @@
+From: Encoding Lab <encoding@sender.test>
+To: Decoder Lab <decoder@receiver.test>
+Subject: Every MIME transfer encoding
+Date: Thu, 13 Aug 2026 12:03:00 +0000
+Message-ID: <transfer-encodings-1@sender.test>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="all-encodings-20260813"
+
+--all-encodings-20260813
+Content-Type: text/plain; charset=us-ascii
+Content-Transfer-Encoding: 7bit
+
+Seven bit body.
+--all-encodings-20260813
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Eight bit body: naïve façade.
+--all-encodings-20260813
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Quoted printable: jalape=C3=B1o =3D edge.
+--all-encodings-20260813
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="base64.bin"
+Content-Transfer-Encoding: base64
+
+AAECAwQFBgcICQoLDA0ODw==
+--all-encodings-20260813
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="binary.bin"
+Content-Transfer-Encoding: binary
+
+binary-payload-contains-no-transform
+--all-encodings-20260813--
