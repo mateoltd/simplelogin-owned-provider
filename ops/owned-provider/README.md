@@ -7,8 +7,11 @@ This directory is a reusable, production operations overlay for SimpleLogin.
 replayable.
 
 It operates arbitrary operator-owned alias domains and mailboxes through the
-upstream API and mail pipeline. The overlay supplies deployment lifecycle,
-observability, capacity validation, upgrades, and disaster recovery.
+upstream API and contained mail pipeline. The overlay supplies deployment
+lifecycle, observability, capacity validation, upgrades, and disaster recovery.
+The target managed production mail boundary is the independent
+[`mail-edge`](../../mail-edge) package; it is not deployed or activated by this
+overlay.
 
 ## Contained end-to-end environment
 
@@ -71,7 +74,7 @@ Runbooks:
 
 - [Configuration and secrets](CONFIGURATION.md)
 - [Mail and DNS preflight](MAIL_DNS.md)
-- [Mail-edge architecture decision](MAIL_EDGE_ARCHITECTURE.md)
+- [Provider-neutral modular mail-edge decision](MAIL_EDGE_ARCHITECTURE.md)
 - [Operations, metrics, alerts, and lifecycle](OPERATIONS.md)
 - [Disaster recovery](DISASTER_RECOVERY.md)
 - [Capacity and scaling](CAPACITY.md)

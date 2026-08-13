@@ -20,14 +20,25 @@
   clean-volume restore, and point-in-time marker proof across owned components;
 - a read-only upstream drift lane reporting replay conflicts, routes,
   configuration, migrations, Dockerfile, and mail-handler changes.
+- an independently packaged `simplelogin-mail-edge` boundary with edge-only
+  migrations and credentials, encrypted durable MIME/envelope blobs, exact-domain
+  immutable route generations, Mailgun managed-inbound and authenticated-SMTP
+  adapters, neutral contracts, crash-safe reducers, reconciliation/quarantine,
+  TLS hook, private SMTP spool, workers, retention, and bounded metrics.
+
+The mail-edge package is implemented and tested but is not wired into this
+Compose overlay, deployed, DNS-activated, or provider-qualified. The existing
+contained Mailpit and application SMTP paths remain test infrastructure. Do not
+interpret package presence as a production mail-path change.
 
 ## External production requirements
 
 Software cannot truthfully provision or attest these without operator authority:
 
 1. Authoritative DNS and delegated reverse DNS passing the preflight.
-2. A production MTA with relay authentication, durable queue backup, deferred/
-   bounce/complaint monitoring, reputation and abuse controls.
+2. An independently deployed mail-edge with edge-only PostgreSQL, encrypted blob
+   storage, supervised hook/SMTP/workers/metrics, backup, private networking, and
+   the neutral SimpleLogin handoff integration.
 3. TLS termination, trusted certificates, forwarded-header policy, firewall,
    load balancer, and DDoS controls.
 4. Off-host immutable encrypted backup retention and separately audited key
@@ -41,7 +52,13 @@ Software cannot truthfully provision or attest these without operator authority:
    obligations.
 8. A staging drill on the real topology using controlled recipients before any
    public traffic change.
+9. Exact-domain Mailgun managed-inbound and authenticated-SMTP configuration,
+   current product-policy qualification artifacts, provider retention/privacy
+   approval, quotas, reputation controls, feedback monitoring, and a staged DNS
+   change with rollback ownership.
 
 `production-audit` validates local configuration; it does not claim these
-external controls exist. Do not deploy publicly until each has named evidence
-and ownership.
+external controls exist. It also does not validate mail-edge migrations,
+capability evidence, bindings, provider configuration, or provider DNS. Run the
+edge's own readiness and activation checks. Do not deploy publicly until each
+requirement has named evidence and ownership.

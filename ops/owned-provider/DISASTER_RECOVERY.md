@@ -7,6 +7,47 @@ spool, configuration, and secrets. The contained test also owns Mailpit state.
 Production MTA queues, object storage, monitoring, and secrets-manager history
 are external components and need coordinated native backup policies.
 
+The independently deployed mail-edge is also outside this overlay's checkpoint
+and encrypted backup. It owns a separate PostgreSQL database, encrypted blob
+volume, blob key ring, provider credential file, diagnostic salt, handoff token,
+TLS private key, migration history, route generations, evidence, feedback,
+unknown outcomes, and quarantine. None is included by `owned-provider backup`.
+Treat omission as data loss, not as a stateless service rebuild.
+
+## Mail-edge recovery set
+
+Back up the edge database and encrypted blob volume at a mutually consistent
+checkpoint. Escrow blob keys separately from both. Back up provider and handoff
+credentials through the secrets manager rather than copying them into the data
+archive. Preserve capability artifacts at their recorded durable URIs and verify
+their SHA-256 values.
+
+Restore mail-edge in this order:
+
+1. Restore the edge database and encrypted blob volume to an isolated network at
+   the recorded release SHA. Restore blob keys and other credentials from their
+   separate escrow.
+2. Run packaged edge migrations and verify exact migration parity, database
+   constraints, blob authentication/hashes, route-generation immutability, and
+   the absence of orphaned cleartext.
+3. Start only hook and metrics. Keep SMTP intake and both workers stopped while
+   inspecting leases, unknown outcomes, quarantine, provider webhook backlog,
+   and route states.
+4. Convert every outbound `submitting` lease that crossed the checkpoint or has
+   uncertain provider timing to `unknown`; the normal lease recovery performs
+   this conservatively. Never reset it to queued.
+5. Start ingress handoff and prove idempotent recovery with controlled fixtures.
+   Then start outbound only after unknown records are isolated and the pinned
+   provider generation is available.
+6. Reconcile controlled external delivery/feedback and confirm storage,
+   unknown, quarantine, and feedback-lag metrics before accepting SMTP or
+   changing DNS.
+
+Database-only restore is insufficient because rows reference encrypted blobs.
+Blob-only restore is insufficient because it lacks dedupe, generation, and
+outcome state. Restoring an older database with newer blobs may leave safe
+orphans, but restoring newer rows without their blobs loses accepted mail.
+
 ## Deterministic full-state checkpoint
 
 ```sh
@@ -66,4 +107,6 @@ This is a genuine point-in-time assertion, not merely a container health check.
 
 Set backup frequency from business RPO, rehearse restore at least quarterly,
 and measure RTO on production-shaped data. A backup is not complete until an
-isolated restore has passed.
+isolated restore has passed. The owned-provider and mail-edge restore drills are
+separate required proofs until an external orchestrator demonstrates their
+coordinated checkpoint and recovery.
