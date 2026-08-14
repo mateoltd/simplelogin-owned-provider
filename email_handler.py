@@ -33,6 +33,7 @@ It should contain the following info:
 
 import argparse
 import email
+import hashlib
 import html
 import time
 import uuid
@@ -63,6 +64,7 @@ from app.alias_utils import (
     get_alias_recipient_name,
 )
 from app.db import Session
+from app.mail_edge.errors import MailEdgeError
 from app.email import status, headers
 from app.email.checks import check_recipient_limit
 from app.email.rate_limit import rate_limited
@@ -161,6 +163,31 @@ from app.pgp_utils import (
 from app.utils import sanitize_email
 from init_app import load_pgp_public_keys
 from server import create_light_app
+
+
+def mail_edge_idempotency_subject(envelope, msg: Message, message_id) -> str:
+    delivery_id = getattr(envelope, "mail_edge_delivery_id", None)
+    if delivery_id:
+        return f"delivery:{delivery_id}"
+    original_content = getattr(envelope, "original_content", None)
+    if not isinstance(original_content, bytes):
+        original_content = message_to_bytes(msg)
+    raw_digest = hashlib.sha256(original_content).hexdigest()
+    if message_id:
+        message_id_digest = hashlib.sha256(str(message_id).encode("utf-8")).hexdigest()
+        return f"message-id-sha256:{message_id_digest}:raw-sha256:{raw_digest}"
+    return f"raw-sha256:{raw_digest}"
+
+
+def select_delivery_status(results, require_complete_handoff: bool) -> str:
+    if require_complete_handoff:
+        for is_success, smtp_status in results:
+            if not is_success and smtp_status != status.E518:
+                return smtp_status
+    for is_success, smtp_status in results:
+        if is_success:
+            return smtp_status
+    return results[0][1]
 
 
 @sentry_sdk.trace
@@ -798,6 +825,9 @@ def forward_email_to_mailbox(
         message_id=str(msg[headers.MESSAGE_ID]),
         commit=True,
     )
+    mail_edge_subject = mail_edge_idempotency_subject(
+        envelope, msg, msg[headers.MESSAGE_ID]
+    )
     LOG.d("Create %s for %s, %s, %s", email_log, contact, user, mailbox)
 
     if config.ENABLE_SPAM_ASSASSIN:
@@ -979,7 +1009,22 @@ def forward_email_to_mailbox(
             envelope.mail_options,
             envelope.rcpt_options,
             is_forward=True,
+            use_mail_edge=True,
+            mail_edge_context={
+                "user_id": alias.user_id,
+                "alias_id": alias.id,
+                "contact_id": contact.id,
+                "mailbox_id": mailbox.id,
+                "email_log_id": email_log.id,
+                "idempotency_subject": mail_edge_subject,
+            },
         )
+    except MailEdgeError as exc:
+        LOG.w("Mail Edge did not prove durable acceptance for forward", exc_info=True)
+        EmailLog.delete(email_log.id, commit=True)
+        if exc.retryable and exc.delivery_certainty != "unknown":
+            return False, status.E407
+        return False, status.E523
     except (SMTPServerDisconnected, SMTPRecipientsRefused, TimeoutError):
         LOG.w(
             "Postfix error during forward phase %s -> %s -> %s",
@@ -1152,6 +1197,9 @@ def handle_reply(
         mailbox_id=mailbox.id,
         message_id=msg[headers.MESSAGE_ID],
         commit=True,
+    )
+    mail_edge_subject = mail_edge_idempotency_subject(
+        envelope, msg, msg[headers.MESSAGE_ID]
     )
     LOG.d("Create %s for %s, %s, %s", email_log, contact, user, mailbox)
 
@@ -1338,6 +1386,15 @@ def handle_reply(
             envelope.mail_options,
             envelope.rcpt_options,
             is_forward=False,
+            use_mail_edge=True,
+            mail_edge_context={
+                "user_id": alias.user_id,
+                "alias_id": alias.id,
+                "contact_id": contact.id,
+                "mailbox_id": mailbox.id,
+                "email_log_id": email_log.id,
+                "idempotency_subject": mail_edge_subject,
+            },
         )
 
         # if alias belongs to several mailboxes, notify other mailboxes about this email
@@ -1351,6 +1408,12 @@ def handle_reply(
             notify_mailbox(alias, mailbox, mb, msg, orig_to, orig_cc, alias_domain)
             notified_mailboxes.add(mb.id)
 
+    except MailEdgeError as exc:
+        LOG.w("Mail Edge did not prove durable acceptance for reply", exc_info=True)
+        EmailLog.delete(email_log.id, commit=True)
+        if exc.retryable and exc.delivery_certainty != "unknown":
+            return False, status.E407
+        return False, status.E523
     except Exception:
         LOG.w("Cannot send email from %s to %s", alias, contact)
         EmailLog.delete(email_log.id, commit=True)
@@ -2328,13 +2391,9 @@ def handle(envelope: Envelope, msg: Message) -> str:
     if nb_success > 0 and nb_non_success > 0:
         LOG.e(f"some deliveries fail and some success, {mail_from}, {rcpt_tos}, {res}")
 
-    for is_success, smtp_status in res:
-        # Consider all deliveries successful if 1 delivery is successful
-        if is_success:
-            return smtp_status
-
-    # Failed delivery for all, return the first failure
-    return res[0][1]
+    return select_delivery_status(
+        res, require_complete_handoff=hasattr(envelope, "mail_edge_delivery_id")
+    )
 
 
 def handle_out_of_office_reply_phase(email_log, envelope, msg, rcpt_tos):
@@ -2488,6 +2547,9 @@ class MailHandler:
 
 def main(port: int):
     """Use aiosmtpd Controller"""
+    from app.mail_edge.composition import build_mail_edge_bridge
+
+    build_mail_edge_bridge()
     controller = Controller(
         MailHandler(),
         hostname="0.0.0.0",

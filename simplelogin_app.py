@@ -447,6 +447,15 @@ def create_simplelogin_app():
     setup_error_page(app)
 
     init_extensions(app)
+    from app.mail_edge.composition import build_mail_edge_bridge
+
+    app.extensions["mail_edge_bridge"] = build_mail_edge_bridge()
+    if app.extensions["mail_edge_bridge"] is not None:
+        from app.mail_edge.health import create_mail_edge_health_blueprint
+
+        app.register_blueprint(
+            create_mail_edge_health_blueprint(app.extensions["mail_edge_bridge"])
+        )
     register_blueprints(app)
     set_index_page(app)
     jinja2_filter(app)
