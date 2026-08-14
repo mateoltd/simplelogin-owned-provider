@@ -448,7 +448,10 @@ def create_simplelogin_app():
     setup_error_page(app)
 
     init_extensions(app)
-    from app.mail_edge.composition import build_mail_edge_bridge
+    from app.mail_edge.composition import (
+        build_mail_edge_bridge,
+        register_mail_edge_process_cleanup,
+    )
 
     app.extensions["mail_edge_bridge"] = build_mail_edge_bridge()
     if app.extensions["mail_edge_bridge"] is not None:
@@ -461,6 +464,7 @@ def create_simplelogin_app():
             return handle(envelope, message)
 
         mail_edge_bridge = app.extensions["mail_edge_bridge"]
+        register_mail_edge_process_cleanup(mail_edge_bridge)
 
         app.register_blueprint(create_mail_edge_health_blueprint(mail_edge_bridge))
         app.register_blueprint(

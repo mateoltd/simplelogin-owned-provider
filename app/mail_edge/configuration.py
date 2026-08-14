@@ -16,6 +16,8 @@ from .errors import MailEdgeConfigurationError, MailEdgeContractError
 
 SECRET_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,127}$")
 MAXIMUM_CONFIG_BYTES = 64 * 1024
+MIME_PART_MEMORY_RESERVE_BYTES = 8 * 1024
+MINIMUM_DELIVERY_FIXED_MEMORY_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,7 @@ class HttpLimits:
     breaker_reset_seconds: float
     pre_dispatch_retries: int
     maximum_json_bytes: int = 1024 * 1024
+    shutdown_seconds: float = 30
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,31 @@ class HostAuthentication:
     verification_keys: Mapping[str, bytes]
     maximum_request_bytes: int = 1024 * 1024
     callback_lease_seconds: int = 60
+
+
+@dataclass(frozen=True)
+class MimeParserLimits:
+    maximum_parts: int
+    maximum_depth: int
+    maximum_header_count: int
+    maximum_header_bytes: int
+    maximum_line_bytes: int
+    maximum_semantic_bytes: int
+    parser_seconds: float
+
+
+@dataclass(frozen=True)
+class HostDeliveryLimits:
+    callback_concurrency: int
+    delivery_concurrency: int
+    maximum_in_flight_raw_bytes: int
+    maximum_in_flight_memory_bytes: int
+    maximum_process_rss_bytes: int
+    minimum_spool_free_bytes: int
+    estimated_memory_multiplier: int
+    estimated_memory_fixed_bytes: int
+    spool_directory: str
+    mime: MimeParserLimits
 
 
 @dataclass(frozen=True)
@@ -54,6 +82,7 @@ class MailEdgeConfiguration:
     maximum_raw_bytes: int
     http: HttpLimits
     host_authentication: HostAuthentication
+    host_delivery: HostDeliveryLimits
     operator_authentication: OperatorAuthentication = OperatorAuthentication()
 
 
@@ -175,6 +204,7 @@ def load_mail_edge_configuration(
             "maximumRawBytes",
             "http",
             "hostAuthentication",
+            "hostDelivery",
         },
         {"operatorAuthentication"},
     )
@@ -213,7 +243,7 @@ def load_mail_edge_configuration(
             "breakerResetSeconds",
             "preDispatchRetries",
         },
-        {"maximumJsonBytes"},
+        {"maximumJsonBytes", "shutdownSeconds"},
     )
     auth = _strict_object(
         value["hostAuthentication"],
@@ -224,6 +254,33 @@ def load_mail_edge_configuration(
             "verificationKeys",
         },
         {"maximumRequestBytes", "callbackLeaseSeconds"},
+    )
+    host_delivery = _strict_object(
+        value["hostDelivery"],
+        {
+            "callbackConcurrency",
+            "deliveryConcurrency",
+            "maximumInFlightRawBytes",
+            "maximumInFlightMemoryBytes",
+            "maximumProcessRssBytes",
+            "minimumSpoolFreeBytes",
+            "estimatedMemoryMultiplier",
+            "estimatedMemoryFixedBytes",
+            "spoolDirectory",
+            "mime",
+        },
+    )
+    mime = _strict_object(
+        host_delivery["mime"],
+        {
+            "maximumParts",
+            "maximumDepth",
+            "maximumHeaderCount",
+            "maximumHeaderBytes",
+            "maximumLineBytes",
+            "maximumSemanticBytes",
+            "parserSeconds",
+        },
     )
     audience = auth["audience"]
     if not isinstance(audience, str) or not TOKEN_RE.fullmatch(audience):
@@ -260,14 +317,92 @@ def load_mail_edge_configuration(
     except MailEdgeContractError:
         _invalid("MAIL_EDGE_TENANT_ID_INVALID")
 
+    maximum_raw_bytes = _integer(
+        value["maximumRawBytes"], 1, MAX_RAW_BYTES, "MAIL_EDGE_RAW_LIMIT_INVALID"
+    )
+    spool_directory_value = host_delivery["spoolDirectory"]
+    if not isinstance(spool_directory_value, str):
+        _invalid("MAIL_EDGE_SPOOL_DIRECTORY_INVALID")
+    spool_directory = Path(spool_directory_value)
+    if not spool_directory.is_absolute():
+        _invalid("MAIL_EDGE_SPOOL_DIRECTORY_INVALID")
+    try:
+        spool_directory = spool_directory.resolve(strict=True)
+        if not spool_directory.is_dir():
+            _invalid("MAIL_EDGE_SPOOL_DIRECTORY_INVALID")
+    except OSError:
+        _invalid("MAIL_EDGE_SPOOL_DIRECTORY_INVALID")
+
+    maximum_in_flight_raw_bytes = _integer(
+        host_delivery["maximumInFlightRawBytes"],
+        1,
+        MAX_RAW_BYTES * 1024,
+        "MAIL_EDGE_HOST_RAW_BUDGET_INVALID",
+    )
+    estimated_memory_multiplier = _integer(
+        host_delivery["estimatedMemoryMultiplier"],
+        4,
+        16,
+        "MAIL_EDGE_HOST_MEMORY_ESTIMATE_INVALID",
+    )
+    maximum_parts = _integer(
+        mime["maximumParts"],
+        1,
+        10000,
+        "MAIL_EDGE_MIME_PART_LIMIT_INVALID",
+    )
+    estimated_memory_fixed_bytes = _integer(
+        host_delivery["estimatedMemoryFixedBytes"],
+        0,
+        256 * 1024 * 1024,
+        "MAIL_EDGE_HOST_MEMORY_ESTIMATE_INVALID",
+    )
+    maximum_in_flight_memory_bytes = _integer(
+        host_delivery["maximumInFlightMemoryBytes"],
+        1,
+        64 * 1024 * 1024 * 1024,
+        "MAIL_EDGE_HOST_MEMORY_BUDGET_INVALID",
+    )
+    maximum_process_rss_bytes = _integer(
+        host_delivery["maximumProcessRssBytes"],
+        1,
+        64 * 1024 * 1024 * 1024,
+        "MAIL_EDGE_HOST_RSS_LIMIT_INVALID",
+    )
+    callback_concurrency = _integer(
+        host_delivery["callbackConcurrency"],
+        1,
+        4096,
+        "MAIL_EDGE_HOST_CALLBACK_CONCURRENCY_INVALID",
+    )
+    delivery_concurrency = _integer(
+        host_delivery["deliveryConcurrency"],
+        1,
+        1024,
+        "MAIL_EDGE_HOST_DELIVERY_CONCURRENCY_INVALID",
+    )
+    maximum_message_estimate = (
+        maximum_raw_bytes * estimated_memory_multiplier + estimated_memory_fixed_bytes
+    )
+    minimum_fixed_memory = (
+        MINIMUM_DELIVERY_FIXED_MEMORY_BYTES
+        + maximum_parts * MIME_PART_MEMORY_RESERVE_BYTES
+    )
+    if (
+        maximum_in_flight_raw_bytes < maximum_raw_bytes
+        or maximum_in_flight_memory_bytes < maximum_message_estimate
+        or maximum_process_rss_bytes < maximum_message_estimate
+        or delivery_concurrency > callback_concurrency
+        or estimated_memory_fixed_bytes < minimum_fixed_memory
+    ):
+        _invalid("MAIL_EDGE_HOST_RESOURCE_BUDGET_INVALID")
+
     return MailEdgeConfiguration(
         tenant_id=tenant_id,
         base_url=base_url,
         bearer_token=bearer_token,
         opaque_token_key=_secret(value["opaqueTokenKey"], secret_directory),
-        maximum_raw_bytes=_integer(
-            value["maximumRawBytes"], 1, MAX_RAW_BYTES, "MAIL_EDGE_RAW_LIMIT_INVALID"
-        ),
+        maximum_raw_bytes=maximum_raw_bytes,
         http=HttpLimits(
             connect_seconds=_number(
                 http["connectSeconds"], 0.05, 30, "MAIL_EDGE_CONNECT_TIMEOUT_INVALID"
@@ -293,6 +428,12 @@ def load_mail_edge_configuration(
                 4 * 1024 * 1024,
                 "MAIL_EDGE_JSON_LIMIT_INVALID",
             ),
+            shutdown_seconds=_number(
+                http.get("shutdownSeconds", 30),
+                0.1,
+                300,
+                "MAIL_EDGE_SHUTDOWN_TIMEOUT_INVALID",
+            ),
         ),
         host_authentication=HostAuthentication(
             audience=audience,
@@ -317,6 +458,61 @@ def load_mail_edge_configuration(
                 1,
                 900,
                 "MAIL_EDGE_CALLBACK_LEASE_INVALID",
+            ),
+        ),
+        host_delivery=HostDeliveryLimits(
+            callback_concurrency=callback_concurrency,
+            delivery_concurrency=delivery_concurrency,
+            maximum_in_flight_raw_bytes=maximum_in_flight_raw_bytes,
+            maximum_in_flight_memory_bytes=maximum_in_flight_memory_bytes,
+            maximum_process_rss_bytes=maximum_process_rss_bytes,
+            minimum_spool_free_bytes=_integer(
+                host_delivery["minimumSpoolFreeBytes"],
+                0,
+                64 * 1024 * 1024 * 1024,
+                "MAIL_EDGE_HOST_SPOOL_RESERVE_INVALID",
+            ),
+            estimated_memory_multiplier=estimated_memory_multiplier,
+            estimated_memory_fixed_bytes=estimated_memory_fixed_bytes,
+            spool_directory=str(spool_directory),
+            mime=MimeParserLimits(
+                maximum_parts=maximum_parts,
+                maximum_depth=_integer(
+                    mime["maximumDepth"],
+                    1,
+                    100,
+                    "MAIL_EDGE_MIME_DEPTH_LIMIT_INVALID",
+                ),
+                maximum_header_count=_integer(
+                    mime["maximumHeaderCount"],
+                    1,
+                    10000,
+                    "MAIL_EDGE_MIME_HEADER_LIMIT_INVALID",
+                ),
+                maximum_header_bytes=_integer(
+                    mime["maximumHeaderBytes"],
+                    1024,
+                    16 * 1024 * 1024,
+                    "MAIL_EDGE_MIME_HEADER_LIMIT_INVALID",
+                ),
+                maximum_line_bytes=_integer(
+                    mime["maximumLineBytes"],
+                    998,
+                    4 * 1024 * 1024,
+                    "MAIL_EDGE_MIME_LINE_LIMIT_INVALID",
+                ),
+                maximum_semantic_bytes=_integer(
+                    mime["maximumSemanticBytes"],
+                    1,
+                    MAX_RAW_BYTES * 16,
+                    "MAIL_EDGE_MIME_SEMANTIC_LIMIT_INVALID",
+                ),
+                parser_seconds=_number(
+                    mime["parserSeconds"],
+                    0.05,
+                    120,
+                    "MAIL_EDGE_MIME_PARSER_TIMEOUT_INVALID",
+                ),
             ),
         ),
         operator_authentication=OperatorAuthentication(

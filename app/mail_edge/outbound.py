@@ -111,6 +111,9 @@ class MailEdgeOutboundTransport:
         self._client = client
         self._projections = projections
 
+    def close(self, timeout_seconds: float | None = None) -> bool:
+        return self._client.close(timeout_seconds)
+
     def send(self, send_request: SendRequest) -> bool:
         context = send_request.mail_edge_context
         validate_outbound_context(context)

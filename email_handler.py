@@ -2547,9 +2547,14 @@ class MailHandler:
 
 def main(port: int):
     """Use aiosmtpd Controller"""
-    from app.mail_edge.composition import build_mail_edge_bridge
+    from app.mail_edge.composition import (
+        build_mail_edge_bridge,
+        register_mail_edge_process_cleanup,
+    )
 
-    build_mail_edge_bridge()
+    mail_edge_bridge = build_mail_edge_bridge()
+    if mail_edge_bridge is not None:
+        register_mail_edge_process_cleanup(mail_edge_bridge)
     controller = Controller(
         MailHandler(),
         hostname="0.0.0.0",

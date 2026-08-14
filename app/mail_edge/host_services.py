@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timedelta, timezone
-from email import message_from_bytes
 from types import SimpleNamespace
 from typing import Callable, Mapping, Optional, Protocol
 
@@ -14,6 +13,8 @@ from .contracts import (
     canonical_mailbox,
 )
 from .errors import MailEdgeAmbiguousDeliveryError, MailEdgeContractError
+from .mime import BoundedMimeParserService
+from .resources import RawMessageResource
 from .security import (
     HostSignature,
     parse_host_signature_headers,
@@ -125,6 +126,7 @@ class ApplicationDeliveryService:
         bindings: BindingAuthorizer,
         destinations: DestinationResolver,
         deliver_message: Callable[[object, object], str],
+        mime_parser: BoundedMimeParserService,
         callback_lease_seconds: int = 60,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ):
@@ -133,6 +135,7 @@ class ApplicationDeliveryService:
         self._bindings = bindings
         self._destinations = destinations
         self._deliver_message = deliver_message
+        self._mime_parser = mime_parser
         self._callback_lease_seconds = callback_lease_seconds
         self._clock = clock
 
@@ -163,7 +166,10 @@ class ApplicationDeliveryService:
         )
 
     def deliver(
-        self, delivery: ApplicationDelivery, raw_message: bytes, callback_body: bytes
+        self,
+        delivery: ApplicationDelivery,
+        raw_message: RawMessageResource,
+        callback_body: bytes,
     ) -> Mapping[str, object]:
         claim = self.claim(delivery, callback_body)
         if claim.completed_acknowledgement is not None:
@@ -171,7 +177,10 @@ class ApplicationDeliveryService:
         return self.deliver_claimed(delivery, raw_message, claim)
 
     def deliver_claimed(
-        self, delivery: ApplicationDelivery, raw_message: bytes, claim: CallbackClaim
+        self,
+        delivery: ApplicationDelivery,
+        raw_message: RawMessageResource,
+        claim: CallbackClaim,
     ) -> Mapping[str, object]:
         route = self._destinations.resolve_destination(
             delivery.destination, delivery.envelope
@@ -193,11 +202,14 @@ class ApplicationDeliveryService:
                 "APPLICATION_DELIVERY_BINDING_REJECTED", http_status=409
             )
         if (
-            not isinstance(raw_message, bytes)
-            or len(raw_message) != delivery.raw.size
-            or hashlib.sha256(raw_message).hexdigest() != delivery.raw.sha256
+            not isinstance(raw_message, RawMessageResource)
+            or not raw_message.is_file_backed
         ):
-            raise MailEdgeContractError("APPLICATION_DELIVERY_RAW_MISMATCH")
+            raise MailEdgeContractError("APPLICATION_DELIVERY_RAW_RESOURCE_INVALID")
+        raw_message.seal(
+            expected_size=delivery.raw.size, expected_sha256=delivery.raw.sha256
+        )
+        message = self._mime_parser.parse(raw_message)
         envelope = SimpleNamespace(
             mail_from=delivery.envelope.mail_from or "<>",
             rcpt_tos=[recipient_address],
@@ -207,7 +219,6 @@ class ApplicationDeliveryService:
             mail_edge_delivery_id=delivery.delivery_id,
             mail_edge_destination_id=delivery.destination.destination_id,
         )
-        message = message_from_bytes(raw_message)
         self._callbacks.start_business_effect(claim.receipt_id, claim.fence)
         try:
             result = self._deliver_message(envelope, message)

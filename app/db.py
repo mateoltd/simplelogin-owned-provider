@@ -11,7 +11,11 @@ engine = create_engine(
 )
 connection = engine.connect()
 
-Session = scoped_session(sessionmaker(bind=connection))
+# Production sessions must acquire independent pooled connections. Binding every
+# thread-local Session to one process-global Connection corrupts transactions as
+# soon as two HTTP callbacks overlap. ``connection`` remains available for the
+# test suite's outer rollback transaction and is installed there explicitly.
+Session = scoped_session(sessionmaker(bind=engine))
 
 # Session is actually a proxy, more info on
 # https://docs.sqlalchemy.org/en/14/orm/contextual.html?highlight=scoped_session#implicit-method-access

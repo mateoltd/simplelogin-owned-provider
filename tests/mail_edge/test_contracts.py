@@ -125,3 +125,8 @@ def test_malformed_nested_values_fail_as_typed_contract_errors():
     ):
         with pytest.raises(MailEdgeContractError):
             operation()
+
+    feedback["kind"] = "bounced"
+    feedback["normalizedEvidence"] = {"count": 10**1000}
+    with pytest.raises(MailEdgeContractError):
+        parse_application_feedback(feedback)

@@ -19,18 +19,23 @@ def create_mail_edge_health_blueprint(bridge: MailEdgeBridge) -> Blueprint:
     def ready():
         database_ready = False
         edge_ready = False
+        host_delivery_ready = bridge.host_admission.ready()
         try:
             Session.execute(text("SELECT 1"))
             database_ready = True
             edge_ready = bridge.client.ready()
         except Exception:
             Session.rollback()
-        ready_now = database_ready and edge_ready
+        ready_now = database_ready and edge_ready and host_delivery_ready
         return (
             jsonify(
                 {
                     "status": "ready" if ready_now else "not_ready",
-                    "checks": {"database": database_ready, "mailEdge": edge_ready},
+                    "checks": {
+                        "database": database_ready,
+                        "hostDelivery": host_delivery_ready,
+                        "mailEdge": edge_ready,
+                    },
                 }
             ),
             200 if ready_now else 503,
