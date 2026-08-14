@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import requests
@@ -10,8 +11,14 @@ from app.mail_edge.configuration import (
     HostAuthentication,
     HttpLimits,
     MailEdgeConfiguration,
+    OperatorAuthentication,
 )
-from app.mail_edge.contracts import SmtpEnvelope, SmtpRecipient
+from app.mail_edge.contracts import (
+    RawAccessGrant,
+    RawMessageRef,
+    SmtpEnvelope,
+    SmtpRecipient,
+)
 from app.mail_edge.errors import (
     MailEdgeAmbiguousDeliveryError,
     MailEdgeContractError,
@@ -36,9 +43,10 @@ class Response:
 
 
 class StreamingResponse:
-    def __init__(self, status_code, body):
+    def __init__(self, status_code, body, headers=None):
         self.status_code = status_code
         self._body = body
+        self.headers = headers or {}
         self.closed = False
 
     def iter_content(self, chunk_size):
@@ -70,6 +78,7 @@ def configuration(retries=1):
         maximum_raw_bytes=26214400,
         http=HttpLimits(1, 5, 2, 3, 10, retries),
         host_authentication=HostAuthentication("host", 300, 30, {"key": b"k" * 32}),
+        operator_authentication=OperatorAuthentication("u" * 32, "p" * 32),
     )
 
 
@@ -80,6 +89,44 @@ def raw_ref(raw):
         "sha256": hashlib.sha256(raw).hexdigest(),
         "size": len(raw),
         "mediaType": "message/rfc822",
+    }
+
+
+def raw_grant(
+    raw, *, purpose="operator_review", single_use=False, subject_id="review-1"
+):
+    now = datetime.now(timezone.utc)
+    reference = RawMessageRef(BINDING_ID, hashlib.sha256(raw).hexdigest(), len(raw))
+    return RawAccessGrant(
+        grant_id=REPLAY_BLOB_ID,
+        tenant_id=TENANT_ID,
+        raw=reference,
+        audience="host",
+        subject_id=subject_id,
+        purpose=purpose,
+        single_use=single_use,
+        opaque_token="t" * 43,
+        download_path=f"/v1/raw-access-grants/{REPLAY_BLOB_ID}/raw",
+        issued_at=(now - timedelta(seconds=1)).isoformat().replace("+00:00", "Z"),
+        expires_at=(now + timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+    )
+
+
+def raw_grant_wire(grant):
+    return {
+        "schemaVersion": "v1",
+        "grantId": grant.grant_id,
+        "tenantId": grant.tenant_id,
+        "raw": dict(grant.raw.to_wire()),
+        "audience": grant.audience,
+        "operation": "raw_download",
+        "subjectId": grant.subject_id,
+        "purpose": grant.purpose,
+        "singleUse": grant.single_use,
+        "opaqueToken": grant.opaque_token,
+        "downloadPath": grant.download_path,
+        "issuedAt": grant.issued_at,
+        "expiresAt": grant.expires_at,
     }
 
 
@@ -210,6 +257,106 @@ def test_large_message_uses_seekable_stream_and_content_length_without_buffer_co
     assert session.calls[0][2]["headers"]["Content-Length"] == str(len(raw))
 
 
+def test_raw_grant_download_is_context_bound_streamed_and_integrity_checked():
+    raw = b"From: sender@example.net\r\n\r\nmessage"
+    grant = raw_grant(raw)
+    response = StreamingResponse(
+        200,
+        raw,
+        {
+            "Content-Type": "message/rfc822",
+            "Content-Length": str(len(raw)),
+            "Accept-Ranges": "none",
+        },
+    )
+    session = Session([response])
+    target = io.BytesIO()
+    MailEdgeClient(configuration(), session=session).download_raw_to(grant, target)
+    assert target.getvalue() == raw
+    headers = session.calls[0][2]["headers"]
+    assert headers["Authorization"] == f"MailEdgeRaw {grant.opaque_token}"
+    assert headers["Accept-Encoding"] == "identity"
+    assert headers["X-Mail-Edge-Subject-Id"] == grant.subject_id
+    assert response.closed
+
+    invalid = StreamingResponse(
+        200,
+        raw,
+        {
+            "Content-Type": "message/rfc822",
+            "Content-Length": str(len(raw)),
+            "Accept-Ranges": "bytes",
+        },
+    )
+    with pytest.raises(MailEdgeContractError):
+        MailEdgeClient(configuration(), session=Session([invalid])).download_raw_to(
+            grant, io.BytesIO()
+        )
+    assert invalid.closed
+
+
+def test_raw_grants_and_operator_controls_use_exact_scoped_credentials():
+    raw = b"message"
+    grant = raw_grant(raw)
+    control_view = {
+        "binding": binding(),
+        "state": "active",
+        "optimisticVersion": 2,
+        "qualifiedAt": "2026-08-14T12:00:00Z",
+        "activatedAt": "2026-08-14T12:01:00Z",
+        "drainingAt": None,
+        "retiredAt": None,
+        "checks": [],
+        "pinnedInbound": 0,
+        "pinnedOutbound": 1,
+    }
+    quarantine_view = {
+        "tenantId": TENANT_ID,
+        "intentId": INTENT_ID,
+        "intentState": "quarantined_unknown",
+        "intentVersion": 2,
+        "attemptId": None,
+        "attemptState": None,
+        "attemptFence": 3,
+        "certainty": "unknown",
+    }
+    session = Session(
+        [
+            Response(201, raw_grant_wire(grant)),
+            Response(200, control_view),
+            Response(200, quarantine_view),
+        ]
+    )
+    client = MailEdgeClient(configuration(), session=session)
+    issued = client.issue_raw_access_grant(
+        grant.raw,
+        purpose="operator_review",
+        single_use=False,
+        subject_id="review-1",
+    )
+    assert issued == grant
+    transitioned = client.transition_binding(
+        BINDING_ID,
+        1,
+        "activate",
+        expected_version=1,
+        reason_code="qualification_passed",
+    )
+    assert transitioned["state"] == "active"
+    decided = client.decide_outbound_quarantine(
+        INTENT_ID,
+        "authorize_retry",
+        evidence={"ticket": "approved"},
+        expected_fence=3,
+        expected_version=2,
+        reason_code="operator_approved",
+    )
+    assert decided["certainty"] == "unknown"
+    assert session.calls[0][2]["headers"]["Authorization"].startswith("Bearer b")
+    assert session.calls[1][2]["headers"]["Authorization"] == "Bearer " + "u" * 32
+    assert session.calls[2][2]["headers"]["Authorization"] == "Bearer " + "p" * 32
+
+
 def test_safe_request_retries_boundedly_but_unknown_response_never_loops():
     raw = b"message"
     session = Session([requests.ConnectTimeout(), Response(201, raw_ref(raw))])
@@ -262,15 +409,21 @@ def test_remote_problem_retryability_is_explicit_and_only_not_sent_is_safe():
         response = Response(
             503,
             {
-                "code": "HOST_UNAVAILABLE",
+                "schemaVersion": "v1",
+                "type": "https://mail-edge.dev/problems/host-unavailable",
+                "title": "Host unavailable",
+                "status": 503,
+                "code": "host-unavailable",
                 "deliveryCertainty": certainty,
                 "retryable": remote_retryable,
             },
         )
-        problem = MailEdgeClient._problem(response)
+        problem = MailEdgeClient(configuration(), session=Session([]))._problem(
+            response
+        )
         assert problem.retryable is expected_retryable
         assert problem.delivery_certainty == certainty
-    malformed = MailEdgeClient._problem(
+    malformed = MailEdgeClient(configuration(), session=Session([]))._problem(
         Response(
             500,
             {

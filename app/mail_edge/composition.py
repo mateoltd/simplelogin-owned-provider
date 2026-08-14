@@ -7,6 +7,7 @@ from app.mail_sender import MailSender, mail_sender
 
 from .client import MailEdgeClient
 from .configuration import MailEdgeConfiguration, configuration_from_environment
+from .control import MailEdgeControlService
 from .host_services import (
     ApplicationDeliveryService,
     ApplicationFeedbackService,
@@ -35,6 +36,7 @@ class MailEdgeBridge:
     feedback_service: ApplicationFeedbackService
     callback_receipts: CallbackReceiptRepository
     binding_projections: RouteBindingProjectionRepository
+    control: MailEdgeControlService
 
     def application_delivery_service(
         self, deliver_message
@@ -43,7 +45,9 @@ class MailEdgeBridge:
             self.configuration.tenant_id,
             self.callback_receipts,
             self.binding_projections,
+            self.recipient_router,
             deliver_message,
+            self.configuration.host_authentication.callback_lease_seconds,
         )
 
 
@@ -65,23 +69,29 @@ def build_mail_edge_bridge(
     routing_repository = SimpleLoginAliasRoutingRepository()
     transport = MailEdgeOutboundTransport(client, outbound_projections)
     sender.set_mail_edge_transport(transport)
+    recipient_router = RecipientRouter(
+        selected.tenant_id,
+        routing_repository,
+        OpaqueAliasTokenCodec(selected.tenant_id, selected.opaque_token_key),
+    )
+    control = MailEdgeControlService(client, binding_projections)
     return MailEdgeBridge(
         selected,
         client,
         transport,
         OutboundStatusProjectionService(client, outbound_projections),
-        RecipientRouter(
-            selected.tenant_id,
-            routing_repository,
-            OpaqueAliasTokenCodec(selected.tenant_id, selected.opaque_token_key),
-        ),
+        recipient_router,
         ReverseRouteResolver(selected.tenant_id, routing_repository),
         AuthenticatedHostOperations(
             selected.host_authentication, ReplayNonceRepository()
         ),
         ApplicationFeedbackService(
-            selected.tenant_id, callback_receipts, outbound_projections.stage_feedback
+            selected.tenant_id,
+            callback_receipts,
+            outbound_projections.stage_feedback,
+            selected.host_authentication.callback_lease_seconds,
         ),
         callback_receipts,
         binding_projections,
+        control,
     )

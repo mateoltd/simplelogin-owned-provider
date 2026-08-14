@@ -1,23 +1,29 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import io
 import json
+import math
 import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import BinaryIO, Callable, Optional
+from datetime import datetime, timezone
+from types import MappingProxyType
+from typing import Any, BinaryIO, Callable, Mapping, Optional
 
 import requests
 
 from .configuration import MailEdgeConfiguration
 from .contracts import (
     OUTBOUND_STATES,
+    RawAccessGrant,
     RawMessageRef,
     SmtpEnvelope,
     canonical_json,
     parse_raw_message_ref,
+    parse_raw_access_grant,
     parse_rfc3339,
     parse_route_binding,
     parse_smtp_envelope,
@@ -33,8 +39,29 @@ from .errors import (
 )
 
 
-REMOTE_ERROR_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
-MAXIMUM_RESPONSE_BYTES = 64 * 1024
+REMOTE_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+REMOTE_PROBLEM_CODES = {
+    "validation-failed": "VALIDATION_FAILED",
+    "authentication-failed": "AUTHENTICATION_FAILED",
+    "authorization-failed": "AUTHORIZATION_FAILED",
+    "not-found": "NOT_FOUND",
+    "conflict": "CONFLICT",
+    "idempotency-conflict": "IDEMPOTENCY_CONFLICT",
+    "binding-unavailable": "BINDING_UNAVAILABLE",
+    "capability-unsupported": "CAPABILITY_UNSUPPORTED",
+    "rate-limited": "RATE_LIMITED",
+    "ingress-limit-exceeded": "INGRESS_LIMIT_EXCEEDED",
+    "ingress-failed": "INGRESS_FAILED",
+    "storage-unavailable": "STORAGE_UNAVAILABLE",
+    "workflow-conflict": "WORKFLOW_CONFLICT",
+    "stale-fence": "STALE_FENCE",
+    "illegal-transition": "ILLEGAL_TRANSITION",
+    "provider-not-sent": "PROVIDER_NOT_SENT",
+    "provider-outcome-unknown": "PROVIDER_UNKNOWN",
+    "provider-rejected": "PROVIDER_REJECTED",
+    "host-unavailable": "HOST_UNAVAILABLE",
+    "internal": "INTERNAL",
+}
 
 
 @dataclass(frozen=True)
@@ -47,6 +74,179 @@ class OutboundIntent:
     created_at: str
     raw: RawMessageRef
     envelope: SmtpEnvelope
+
+
+def _exact_object(value: Any, fields: set[str]) -> Mapping[str, Any]:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise MailEdgeContractError(
+            "MAIL_EDGE_RESPONSE_CONTRACT_INVALID", http_status=502
+        )
+    return value
+
+
+def _safe_integer(value: Any, minimum: int = 0) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not minimum <= value <= 9_007_199_254_740_991
+    ):
+        raise MailEdgeContractError(
+            "MAIL_EDGE_RESPONSE_CONTRACT_INVALID", http_status=502
+        )
+    return value
+
+
+def _parse_binding_control_view(value: Any, tenant_id: str) -> Mapping[str, Any]:
+    candidate = _exact_object(
+        value,
+        {
+            "binding",
+            "state",
+            "optimisticVersion",
+            "qualifiedAt",
+            "activatedAt",
+            "drainingAt",
+            "retiredAt",
+            "checks",
+            "pinnedInbound",
+            "pinnedOutbound",
+        },
+    )
+    binding = parse_route_binding(candidate["binding"])
+    if binding.tenant_id != tenant_id or candidate["state"] not in {
+        "draft",
+        "testing",
+        "active",
+        "draining",
+        "retired",
+        "failed",
+    }:
+        raise MailEdgeContractError(
+            "MAIL_EDGE_BINDING_RESPONSE_INVALID", http_status=502
+        )
+    for field in ("qualifiedAt", "activatedAt", "drainingAt", "retiredAt"):
+        if candidate[field] is not None:
+            parse_rfc3339(candidate[field], "MAIL_EDGE_BINDING_RESPONSE_INVALID")
+    checks = candidate["checks"]
+    if not isinstance(checks, list) or len(checks) > 1024:
+        raise MailEdgeContractError(
+            "MAIL_EDGE_BINDING_RESPONSE_INVALID", http_status=502
+        )
+    for check in checks:
+        item = _exact_object(
+            check, {"checkKind", "outcome", "evidenceAt", "expiresAt", "reportDigest"}
+        )
+        if item["checkKind"] not in {
+            "capability",
+            "dns",
+            "control_plane",
+            "live_conformance",
+            "drift",
+        } or item["outcome"] not in {"pass", "fail", "expired"}:
+            raise MailEdgeContractError(
+                "MAIL_EDGE_BINDING_RESPONSE_INVALID", http_status=502
+            )
+        parse_rfc3339(item["evidenceAt"], "MAIL_EDGE_BINDING_RESPONSE_INVALID")
+        parse_rfc3339(item["expiresAt"], "MAIL_EDGE_BINDING_RESPONSE_INVALID")
+        digest = item["reportDigest"]
+        if not isinstance(digest, str) or not re.fullmatch(r"^[a-f0-9]{64}$", digest):
+            raise MailEdgeContractError(
+                "MAIL_EDGE_BINDING_RESPONSE_INVALID", http_status=502
+            )
+    _safe_integer(candidate["optimisticVersion"])
+    _safe_integer(candidate["pinnedInbound"])
+    _safe_integer(candidate["pinnedOutbound"])
+    return MappingProxyType({**candidate, "binding": binding})
+
+
+def _parse_outbound_quarantine_view(value: Any, tenant_id: str) -> Mapping[str, Any]:
+    candidate = _exact_object(
+        value,
+        {
+            "tenantId",
+            "intentId",
+            "intentState",
+            "intentVersion",
+            "attemptId",
+            "attemptState",
+            "attemptFence",
+            "certainty",
+        },
+    )
+    if parse_uuid7(candidate["tenantId"], "TENANT_ID_INVALID") != tenant_id:
+        raise MailEdgeContractError(
+            "MAIL_EDGE_QUARANTINE_RESPONSE_INVALID", http_status=502
+        )
+    parse_uuid7(candidate["intentId"], "INTENT_ID_INVALID")
+    _safe_integer(candidate["intentVersion"])
+    if candidate["attemptId"] is not None:
+        parse_uuid7(candidate["attemptId"], "ATTEMPT_ID_INVALID")
+    if candidate["attemptFence"] is not None:
+        _safe_integer(candidate["attemptFence"])
+    if candidate["certainty"] is not None and candidate["certainty"] not in {
+        "not_sent",
+        "accepted",
+        "unknown",
+    }:
+        raise MailEdgeContractError(
+            "MAIL_EDGE_QUARANTINE_RESPONSE_INVALID", http_status=502
+        )
+    for field in ("intentState", "attemptState"):
+        item = candidate[field]
+        if item is not None and (not isinstance(item, str) or not 1 <= len(item) <= 64):
+            raise MailEdgeContractError(
+                "MAIL_EDGE_QUARANTINE_RESPONSE_INVALID", http_status=502
+            )
+    return MappingProxyType(dict(candidate))
+
+
+def _parse_inbound_quarantine_view(value: Any, tenant_id: str) -> Mapping[str, Any]:
+    candidate = _exact_object(
+        value,
+        {"tenantId", "receiptId", "state", "version", "fence", "lastErrorCode"},
+    )
+    if parse_uuid7(candidate["tenantId"], "TENANT_ID_INVALID") != tenant_id:
+        raise MailEdgeContractError(
+            "MAIL_EDGE_QUARANTINE_RESPONSE_INVALID", http_status=502
+        )
+    parse_uuid7(candidate["receiptId"], "RECEIPT_ID_INVALID")
+    _safe_integer(candidate["version"])
+    _safe_integer(candidate["fence"])
+    for field in ("state", "lastErrorCode"):
+        item = candidate[field]
+        if item is not None and (not isinstance(item, str) or not 1 <= len(item) <= 64):
+            raise MailEdgeContractError(
+                "MAIL_EDGE_QUARANTINE_RESPONSE_INVALID", http_status=502
+            )
+    return MappingProxyType(dict(candidate))
+
+
+def _validate_decision_evidence(value: Any) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or len(value) > 64:
+        raise MailEdgeContractError("QUARANTINE_EVIDENCE_INVALID")
+    normalized: dict[str, object] = {}
+    for key, item in value.items():
+        if (
+            not isinstance(key, str)
+            or not re.fullmatch(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$", key)
+            or isinstance(item, (dict, list, tuple))
+            or not isinstance(item, (str, int, float, bool))
+            or (isinstance(item, str) and len(item) > 512)
+            or (
+                isinstance(item, (int, float))
+                and not isinstance(item, bool)
+                and (not math.isfinite(item) or abs(item) > 9_007_199_254_740_991)
+            )
+        ):
+            raise MailEdgeContractError("QUARANTINE_EVIDENCE_INVALID")
+        normalized[key] = item
+    return MappingProxyType(normalized)
+
+
+def _validate_reason_code(value: Any) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"^[a-z][a-z0-9_]{0,63}$", value):
+        raise MailEdgeContractError("CONTROL_REASON_CODE_INVALID")
+    return value
 
 
 class CircuitBreaker:
@@ -123,6 +323,24 @@ class MailEdgeClient:
             result["Content-Type"] = content_type
         return result
 
+    def _operator_headers(
+        self, *, privileged: bool = False, content_type: Optional[str] = None
+    ) -> dict[str, str]:
+        authentication = self._configuration.operator_authentication
+        token = (
+            authentication.privileged_operator_bearer_token
+            if privileged
+            else authentication.operator_bearer_token
+        )
+        if token is None:
+            raise MailEdgeContractError(
+                "MAIL_EDGE_OPERATOR_AUTHENTICATION_NOT_CONFIGURED", http_status=503
+            )
+        result = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        if content_type is not None:
+            result["Content-Type"] = content_type
+        return result
+
     def _request(
         self,
         method: str,
@@ -135,6 +353,7 @@ class MailEdgeClient:
     ) -> requests.Response:
         if not self._admission.acquire(blocking=False):
             raise MailEdgeBackpressureError()
+        admission_owned = True
         try:
             self._breaker.enter()
             attempts = (
@@ -161,6 +380,8 @@ class MailEdgeClient:
                         self._breaker.failure()
                     else:
                         self._breaker.success()
+                    setattr(response, "_mail_edge_admission_owned", True)
+                    admission_owned = False
                     return response
                 except requests.ConnectTimeout:
                     if attempt + 1 == attempts:
@@ -184,39 +405,82 @@ class MailEdgeClient:
                     )
             raise AssertionError("unreachable")
         finally:
+            if admission_owned:
+                self._admission.release()
+
+    def _close_response(self, response: requests.Response) -> None:
+        if hasattr(response, "close"):
+            response.close()
+        if getattr(response, "_mail_edge_admission_owned", False):
+            setattr(response, "_mail_edge_admission_owned", False)
             self._admission.release()
 
-    @staticmethod
-    def _response_json(response: requests.Response):
-        if not hasattr(response, "iter_content"):
-            return response.json()
-        body = bytearray()
+    def _response_json(self, response: requests.Response):
         try:
+            if not hasattr(response, "iter_content"):
+                return response.json()
+            body = bytearray()
             for chunk in response.iter_content(64 * 1024):
                 body.extend(chunk)
-                if len(body) > MAXIMUM_RESPONSE_BYTES:
+                if len(body) > self._configuration.http.maximum_json_bytes:
                     raise MailEdgeContractError(
                         "MAIL_EDGE_RESPONSE_TOO_LARGE", http_status=502
                     )
-            return strict_json_loads(bytes(body), MAXIMUM_RESPONSE_BYTES)
+            return strict_json_loads(
+                bytes(body), self._configuration.http.maximum_json_bytes
+            )
         finally:
-            response.close()
+            self._close_response(response)
 
-    @staticmethod
-    def _problem(response: requests.Response) -> MailEdgeError:
+    def _problem(self, response: requests.Response) -> MailEdgeError:
         certainty = "unknown"
         code = "MAIL_EDGE_REQUEST_FAILED"
         retryable = False
         try:
-            body = MailEdgeClient._response_json(response)
-            if isinstance(body, dict):
-                if body.get("deliveryCertainty") in {"not_sent", "accepted", "unknown"}:
-                    certainty = body["deliveryCertainty"]
-                if isinstance(body.get("code"), str) and REMOTE_ERROR_CODE_RE.fullmatch(
-                    body["code"]
-                ):
-                    code = body["code"]
-                retryable = body.get("retryable") is True and certainty == "not_sent"
+            body = self._response_json(response)
+            required = {
+                "schemaVersion",
+                "type",
+                "title",
+                "status",
+                "code",
+                "retryable",
+                "deliveryCertainty",
+            }
+            optional = {
+                "detail",
+                "instance",
+                "traceId",
+                "safeDetails",
+                "occurredAt",
+            }
+            if (
+                not isinstance(body, dict)
+                or not required.issubset(body)
+                or set(body) - required - optional
+                or body["schemaVersion"] != "v1"
+                or body["status"] != response.status_code
+                or not isinstance(body["retryable"], bool)
+                or body["deliveryCertainty"] not in {"not_sent", "accepted", "unknown"}
+            ):
+                raise MailEdgeContractError(
+                    "MAIL_EDGE_PROBLEM_INVALID", http_status=502
+                )
+            remote_code = body["code"]
+            if (
+                not isinstance(remote_code, str)
+                or not REMOTE_ERROR_CODE_RE.fullmatch(remote_code)
+                or remote_code not in REMOTE_PROBLEM_CODES
+                or body["type"] != f"https://mail-edge.dev/problems/{remote_code}"
+                or not isinstance(body["title"], str)
+                or not 1 <= len(body["title"]) <= 96
+            ):
+                raise MailEdgeContractError(
+                    "MAIL_EDGE_PROBLEM_INVALID", http_status=502
+                )
+            certainty = body["deliveryCertainty"]
+            code = REMOTE_PROBLEM_CODES[remote_code]
+            retryable = body["retryable"] and certainty == "not_sent"
         except (
             ValueError,
             json.JSONDecodeError,
@@ -427,6 +691,384 @@ class MailEdgeClient:
             raise self._problem(response)
         return self._parse_outbound_intent(response)
 
+    def download_raw_to(self, grant: RawAccessGrant, target: BinaryIO) -> None:
+        if not isinstance(grant, RawAccessGrant) or not hasattr(target, "write"):
+            raise MailEdgeContractError("RAW_DOWNLOAD_INPUT_INVALID")
+        try:
+            issued_at = datetime.fromisoformat(grant.issued_at.replace("Z", "+00:00"))
+            expires_at = datetime.fromisoformat(grant.expires_at.replace("Z", "+00:00"))
+        except (AttributeError, TypeError, ValueError):
+            raise MailEdgeContractError("RAW_DOWNLOAD_AUTHORIZATION_INVALID")
+        now = datetime.now(timezone.utc)
+        if (
+            grant.tenant_id != self.tenant_id
+            or not hmac.compare_digest(
+                grant.audience.encode("utf-8"),
+                self._configuration.host_authentication.audience.encode("ascii"),
+            )
+            or expires_at <= issued_at
+            or (expires_at - issued_at).total_seconds() > 5 * 60
+            or now < issued_at.astimezone(timezone.utc)
+            or now >= expires_at.astimezone(timezone.utc)
+        ):
+            raise MailEdgeContractError(
+                "RAW_DOWNLOAD_AUTHORIZATION_INVALID", http_status=403
+            )
+        if not self._admission.acquire(blocking=False):
+            raise MailEdgeBackpressureError()
+        response: Optional[requests.Response] = None
+        try:
+            self._breaker.enter()
+            try:
+                response = self._session.request(
+                    "GET",
+                    f"{self._configuration.base_url}{grant.download_path}",
+                    allow_redirects=False,
+                    timeout=(
+                        self._configuration.http.connect_seconds,
+                        self._configuration.http.read_seconds,
+                    ),
+                    stream=True,
+                    headers={
+                        "Accept": "message/rfc822",
+                        "Accept-Encoding": "identity",
+                        "Authorization": f"MailEdgeRaw {grant.opaque_token}",
+                        "X-Mail-Edge-Operation": "raw_download",
+                        "X-Mail-Edge-Signature-Audience": grant.audience,
+                        "X-Mail-Edge-Subject-Id": grant.subject_id,
+                    },
+                )
+            except requests.ConnectTimeout:
+                self._breaker.failure()
+                raise MailEdgeUnavailableError("MAIL_EDGE_CONNECT_TIMEOUT")
+            except (requests.ConnectionError, requests.ReadTimeout):
+                self._breaker.failure()
+                raise MailEdgeUnavailableError("MAIL_EDGE_RAW_DOWNLOAD_UNAVAILABLE")
+            if response.status_code != 200:
+                if response.status_code == 429 or response.status_code >= 500:
+                    self._breaker.failure()
+                else:
+                    self._breaker.success()
+                raise self._problem(response)
+            media_type = (
+                response.headers.get("Content-Type", "").split(";", 1)[0].strip()
+            )
+            content_encoding = response.headers.get("Content-Encoding")
+            accept_ranges = response.headers.get("Accept-Ranges")
+            try:
+                content_length = int(response.headers.get("Content-Length", ""))
+            except (TypeError, ValueError):
+                content_length = -1
+            if (
+                media_type != "message/rfc822"
+                or content_encoding is not None
+                or accept_ranges != "none"
+                or content_length != grant.raw.size
+                or content_length > self._configuration.maximum_raw_bytes
+            ):
+                raise MailEdgeContractError(
+                    "MAIL_EDGE_RAW_DOWNLOAD_METADATA_INVALID", http_status=502
+                )
+            observed = 0
+            digest = hashlib.sha256()
+            try:
+                for chunk in response.iter_content(64 * 1024):
+                    if not chunk:
+                        continue
+                    if not isinstance(chunk, bytes):
+                        raise MailEdgeContractError(
+                            "MAIL_EDGE_RAW_DOWNLOAD_STREAM_INVALID", http_status=502
+                        )
+                    observed += len(chunk)
+                    if observed > grant.raw.size:
+                        raise MailEdgeContractError(
+                            "MAIL_EDGE_RAW_DOWNLOAD_SIZE_INVALID", http_status=502
+                        )
+                    digest.update(chunk)
+                    written = target.write(chunk)
+                    if written is not None and written != len(chunk):
+                        raise MailEdgeContractError("RAW_DOWNLOAD_TARGET_INVALID")
+            except requests.RequestException:
+                self._breaker.failure()
+                raise MailEdgeUnavailableError("MAIL_EDGE_RAW_DOWNLOAD_UNAVAILABLE")
+            if observed != grant.raw.size or not hmac.compare_digest(
+                digest.hexdigest(), grant.raw.sha256
+            ):
+                raise MailEdgeContractError(
+                    "MAIL_EDGE_RAW_DOWNLOAD_INTEGRITY_INVALID", http_status=502
+                )
+            self._breaker.success()
+        except MailEdgeContractError:
+            self._breaker.failure()
+            raise
+        except (OSError, ValueError):
+            self._breaker.failure()
+            raise MailEdgeContractError("RAW_DOWNLOAD_TARGET_INVALID") from None
+        finally:
+            if response is not None:
+                response.close()
+            self._admission.release()
+
+    def issue_raw_access_grant(
+        self,
+        raw: RawMessageRef,
+        *,
+        purpose: str,
+        single_use: bool,
+        subject_id: str,
+    ) -> RawAccessGrant:
+        if purpose not in {"operator_review", "reconciliation"}:
+            raise MailEdgeContractError("RAW_ACCESS_GRANT_PURPOSE_INVALID")
+        if (
+            not isinstance(subject_id, str)
+            or not re.fullmatch(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$", subject_id)
+            or not isinstance(single_use, bool)
+        ):
+            raise MailEdgeContractError("RAW_ACCESS_GRANT_SUBJECT_INVALID")
+        body = canonical_json(
+            {
+                "purpose": purpose,
+                "raw": dict(raw.to_wire()),
+                "singleUse": single_use,
+                "subjectId": subject_id,
+            }
+        )
+        response = self._request(
+            "POST",
+            f"/v1/tenants/{self.tenant_id}/raw-access-grants",
+            retry_proven_safe=False,
+            headers=self._headers("application/json"),
+            data=body,
+        )
+        if response.status_code != 201:
+            raise self._problem(response)
+        grant = parse_raw_access_grant(
+            self._response_json(response), self._configuration.maximum_raw_bytes
+        )
+        if (
+            grant.tenant_id != self.tenant_id
+            or grant.raw != raw
+            or not hmac.compare_digest(
+                grant.audience.encode("utf-8"),
+                self._configuration.host_authentication.audience.encode("ascii"),
+            )
+            or grant.purpose != purpose
+            or grant.single_use != single_use
+            or not hmac.compare_digest(
+                grant.subject_id.encode("utf-8"), subject_id.encode("ascii")
+            )
+        ):
+            raise MailEdgeContractError(
+                "MAIL_EDGE_RAW_GRANT_RESPONSE_MISMATCH", http_status=502
+            )
+        return grant
+
+    def revoke_raw_access_grant(self, grant_id: str, expected_fence: int) -> None:
+        validated = parse_uuid7(grant_id, "RAW_ACCESS_GRANT_ID_INVALID")
+        _safe_integer(expected_fence)
+        response = self._request(
+            "POST",
+            f"/v1/tenants/{self.tenant_id}/raw-access-grants/{validated}/revoke",
+            retry_proven_safe=False,
+            headers=self._headers("application/json"),
+            data=canonical_json({"expectedFence": expected_fence}),
+        )
+        if response.status_code != 204:
+            raise self._problem(response)
+        self._close_response(response)
+
+    def inspect_binding(
+        self, binding_id: str, binding_version: int
+    ) -> Mapping[str, Any]:
+        validated = parse_uuid7(binding_id, "BINDING_ID_INVALID")
+        _safe_integer(binding_version, 1)
+        response = self._request(
+            "GET",
+            f"/v1/tenants/{self.tenant_id}/bindings/{validated}/versions/{binding_version}",
+            retry_proven_safe=True,
+            response_loss_certainty="not_sent",
+            headers=self._headers(),
+        )
+        if response.status_code != 200:
+            raise self._problem(response)
+        view = _parse_binding_control_view(
+            self._response_json(response), self.tenant_id
+        )
+        if (
+            view["binding"].binding_id != validated
+            or view["binding"].binding_version != binding_version
+        ):
+            raise MailEdgeContractError(
+                "MAIL_EDGE_BINDING_RESPONSE_MISMATCH", http_status=502
+            )
+        return view
+
+    def transition_binding(
+        self,
+        binding_id: str,
+        binding_version: int,
+        action: str,
+        *,
+        expected_version: int,
+        reason_code: str,
+    ) -> Mapping[str, Any]:
+        validated = parse_uuid7(binding_id, "BINDING_ID_INVALID")
+        _safe_integer(binding_version, 1)
+        _safe_integer(expected_version)
+        if action not in {"activate", "drain", "retire"}:
+            raise MailEdgeContractError("BINDING_ACTION_INVALID")
+        response = self._request(
+            "POST",
+            f"/v1/operator/tenants/{self.tenant_id}/bindings/{validated}/versions/{binding_version}/{action}",
+            retry_proven_safe=False,
+            headers=self._operator_headers(content_type="application/json"),
+            data=canonical_json(
+                {
+                    "expectedVersion": expected_version,
+                    "reasonCode": _validate_reason_code(reason_code),
+                }
+            ),
+        )
+        if response.status_code != 200:
+            raise self._problem(response)
+        view = _parse_binding_control_view(
+            self._response_json(response), self.tenant_id
+        )
+        if (
+            view["binding"].binding_id != validated
+            or view["binding"].binding_version != binding_version
+        ):
+            raise MailEdgeContractError(
+                "MAIL_EDGE_BINDING_RESPONSE_MISMATCH", http_status=502
+            )
+        return view
+
+    def inspect_outbound_quarantine(self, intent_id: str) -> Mapping[str, Any]:
+        validated = parse_uuid7(intent_id, "INTENT_ID_INVALID")
+        response = self._request(
+            "GET",
+            f"/v1/tenants/{self.tenant_id}/outbound-intents/{validated}/quarantine",
+            retry_proven_safe=True,
+            response_loss_certainty="not_sent",
+            headers=self._headers(),
+        )
+        if response.status_code != 200:
+            raise self._problem(response)
+        view = _parse_outbound_quarantine_view(
+            self._response_json(response), self.tenant_id
+        )
+        if view["intentId"] != validated:
+            raise MailEdgeContractError(
+                "MAIL_EDGE_QUARANTINE_RESPONSE_MISMATCH", http_status=502
+            )
+        return view
+
+    def decide_outbound_quarantine(
+        self,
+        intent_id: str,
+        action: str,
+        *,
+        evidence: Mapping[str, object],
+        expected_fence: int,
+        expected_version: int,
+        reason_code: str,
+    ) -> Mapping[str, Any]:
+        validated = parse_uuid7(intent_id, "INTENT_ID_INVALID")
+        if action not in {
+            "resolve_accepted",
+            "resolve_not_sent",
+            "authorize_retry",
+        }:
+            raise MailEdgeContractError("OUTBOUND_QUARANTINE_ACTION_INVALID")
+        body = canonical_json(
+            {
+                "action": action,
+                "evidence": dict(_validate_decision_evidence(evidence)),
+                "expectedFence": _safe_integer(expected_fence),
+                "expectedVersion": _safe_integer(expected_version),
+                "reasonCode": _validate_reason_code(reason_code),
+            }
+        )
+        response = self._request(
+            "POST",
+            f"/v1/operator/tenants/{self.tenant_id}/outbound-intents/{validated}/quarantine-decisions",
+            retry_proven_safe=False,
+            headers=self._operator_headers(
+                privileged=action == "authorize_retry", content_type="application/json"
+            ),
+            data=body,
+        )
+        if response.status_code != 200:
+            raise self._problem(response)
+        view = _parse_outbound_quarantine_view(
+            self._response_json(response), self.tenant_id
+        )
+        if view["intentId"] != validated:
+            raise MailEdgeContractError(
+                "MAIL_EDGE_QUARANTINE_RESPONSE_MISMATCH", http_status=502
+            )
+        return view
+
+    def inspect_inbound_quarantine(self, receipt_id: str) -> Mapping[str, Any]:
+        validated = parse_uuid7(receipt_id, "RECEIPT_ID_INVALID")
+        response = self._request(
+            "GET",
+            f"/v1/tenants/{self.tenant_id}/inbound-receipts/{validated}/quarantine",
+            retry_proven_safe=True,
+            response_loss_certainty="not_sent",
+            headers=self._headers(),
+        )
+        if response.status_code != 200:
+            raise self._problem(response)
+        view = _parse_inbound_quarantine_view(
+            self._response_json(response), self.tenant_id
+        )
+        if view["receiptId"] != validated:
+            raise MailEdgeContractError(
+                "MAIL_EDGE_QUARANTINE_RESPONSE_MISMATCH", http_status=502
+            )
+        return view
+
+    def decide_inbound_quarantine(
+        self,
+        receipt_id: str,
+        action: str,
+        *,
+        evidence: Mapping[str, object],
+        expected_fence: int,
+        expected_version: int,
+        reason_code: str,
+    ) -> Mapping[str, Any]:
+        validated = parse_uuid7(receipt_id, "RECEIPT_ID_INVALID")
+        if action not in {"release", "terminal"}:
+            raise MailEdgeContractError("INBOUND_QUARANTINE_ACTION_INVALID")
+        body = canonical_json(
+            {
+                "action": action,
+                "evidence": dict(_validate_decision_evidence(evidence)),
+                "expectedFence": _safe_integer(expected_fence),
+                "expectedVersion": _safe_integer(expected_version),
+                "reasonCode": _validate_reason_code(reason_code),
+            }
+        )
+        response = self._request(
+            "POST",
+            f"/v1/operator/tenants/{self.tenant_id}/inbound-receipts/{validated}/quarantine-decisions",
+            retry_proven_safe=False,
+            headers=self._operator_headers(content_type="application/json"),
+            data=body,
+        )
+        if response.status_code != 200:
+            raise self._problem(response)
+        view = _parse_inbound_quarantine_view(
+            self._response_json(response), self.tenant_id
+        )
+        if view["receiptId"] != validated:
+            raise MailEdgeContractError(
+                "MAIL_EDGE_QUARANTINE_RESPONSE_MISMATCH", http_status=502
+            )
+        return view
+
     def submit_message(
         self,
         envelope: SmtpEnvelope,
@@ -450,5 +1092,4 @@ class MailEdgeClient:
         try:
             return response.status_code == 200
         finally:
-            if hasattr(response, "close"):
-                response.close()
+            self._close_response(response)

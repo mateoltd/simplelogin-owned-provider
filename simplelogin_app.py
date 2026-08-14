@@ -249,6 +249,7 @@ def set_index_page(app):
             and not request.path.startswith("/git")
             and not request.path.startswith("/favicon.ico")
             and not request.path.startswith("/health")
+            and not request.path.startswith("/mail-edge/")
         ):
             start_time = g.start_time or time.time()
             LOG.d(
@@ -451,9 +452,23 @@ def create_simplelogin_app():
     app.extensions["mail_edge_bridge"] = build_mail_edge_bridge()
     if app.extensions["mail_edge_bridge"] is not None:
         from app.mail_edge.health import create_mail_edge_health_blueprint
+        from app.mail_edge.http_host import create_mail_edge_host_blueprint
 
+        def deliver_mail_edge_message(envelope, message):
+            from email_handler import handle
+
+            return handle(envelope, message)
+
+        mail_edge_bridge = app.extensions["mail_edge_bridge"]
+
+        app.register_blueprint(create_mail_edge_health_blueprint(mail_edge_bridge))
         app.register_blueprint(
-            create_mail_edge_health_blueprint(app.extensions["mail_edge_bridge"])
+            create_mail_edge_host_blueprint(
+                mail_edge_bridge,
+                mail_edge_bridge.application_delivery_service(
+                    deliver_mail_edge_message
+                ),
+            )
         )
     register_blueprints(app)
     set_index_page(app)

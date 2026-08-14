@@ -48,6 +48,39 @@ def test_versioned_config_resolves_secret_references(tmp_path):
     assert config.bearer_token == "b" * 32
     assert config.opaque_token_key == b"o" * 32
     assert config.host_authentication.verification_keys == {"host-key-1": b"h" * 32}
+    assert config.http.maximum_json_bytes == 1024 * 1024
+    assert config.host_authentication.maximum_request_bytes == 1024 * 1024
+
+
+def test_operator_credentials_are_separate_scopes_and_cannot_be_reused(tmp_path):
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    values = {
+        "tenant-bearer": "b" * 32,
+        "opaque-token": "o" * 32,
+        "host-key-1": "h" * 32,
+        "operator": "u" * 32,
+        "privileged-operator": "p" * 32,
+    }
+    for name, value in values.items():
+        (secrets / name).write_text(value)
+    document = _document(secrets)
+    document["operatorAuthentication"] = {
+        "operatorBearerToken": "secret://operator",
+        "privilegedOperatorBearerToken": "secret://privileged-operator",
+    }
+    path = tmp_path / "mail-edge.json"
+    path.write_text(json.dumps(document))
+    config = load_mail_edge_configuration(str(path))
+    assert config.operator_authentication.operator_bearer_token == "u" * 32
+    assert config.operator_authentication.privileged_operator_bearer_token == "p" * 32
+
+    document["operatorAuthentication"][
+        "privilegedOperatorBearerToken"
+    ] = "secret://operator"
+    path.write_text(json.dumps(document))
+    with pytest.raises(MailEdgeConfigurationError):
+        load_mail_edge_configuration(str(path))
 
 
 def test_config_rejects_inline_secret_unknown_fields_and_relative_path(tmp_path):

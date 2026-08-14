@@ -10,6 +10,7 @@ from app.mail_edge.contracts import ApplicationFeedback, RouteBindingSnapshot
 from app.mail_edge.errors import (
     MailEdgeAmbiguousDeliveryError,
     MailEdgeAuthenticationError,
+    MailEdgeUnavailableError,
     MailEdgeContractError,
 )
 from app.mail_edge.host_services import ApplicationFeedbackService
@@ -82,20 +83,25 @@ def test_duplicate_callback_returns_ack_but_crash_window_is_ambiguous(flask_clie
         subject_id="delivery-1",
     ).delete()
     Session.commit()
-    claim = repository.claim(TENANT_ID, "application_delivery", "delivery-1", "a" * 64)
+    claim = repository.claim(
+        TENANT_ID, "application_delivery", "delivery-1", "a" * 64, 60
+    )
+    with pytest.raises(MailEdgeUnavailableError):
+        repository.claim(TENANT_ID, "application_delivery", "delivery-1", "a" * 64, 60)
+    repository.start_business_effect(claim.receipt_id, claim.fence)
     with pytest.raises(MailEdgeAmbiguousDeliveryError):
-        repository.claim(TENANT_ID, "application_delivery", "delivery-1", "a" * 64)
+        repository.claim(TENANT_ID, "application_delivery", "delivery-1", "a" * 64, 60)
     acknowledgement = {
         "deliveryId": "01890f31-7b4a-7cc8-8d32-2f6e9a401118",
         "acceptedAt": "2026-08-13T12:00:00Z",
     }
-    repository.complete(claim.receipt_id, acknowledgement)
+    repository.complete(claim.receipt_id, claim.fence, acknowledgement)
     duplicate = repository.claim(
-        TENANT_ID, "application_delivery", "delivery-1", "a" * 64
+        TENANT_ID, "application_delivery", "delivery-1", "a" * 64, 60
     )
     assert duplicate.completed_acknowledgement == acknowledgement
     with pytest.raises(MailEdgeAmbiguousDeliveryError):
-        repository.claim(TENANT_ID, "application_delivery", "delivery-1", "b" * 64)
+        repository.claim(TENANT_ID, "application_delivery", "delivery-1", "b" * 64, 60)
     MailEdgeCallbackReceipt.filter_by(
         tenant_id=TENANT_ID,
         operation="application_delivery",
