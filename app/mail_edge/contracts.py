@@ -277,6 +277,38 @@ def parse_raw_message_ref(
 
 
 @dataclass(frozen=True)
+class ApplicationDestination:
+    destination_id: str
+    delivery_mode: str
+    opaque_token: str
+
+    def to_wire(self) -> Mapping[str, str]:
+        return MappingProxyType(
+            {
+                "destinationId": self.destination_id,
+                "deliveryMode": self.delivery_mode,
+                "opaqueToken": self.opaque_token,
+            }
+        )
+
+
+def parse_application_destination(value: Any) -> ApplicationDestination:
+    candidate = _object(value, {"destinationId", "deliveryMode", "opaqueToken"})
+    delivery_mode = candidate["deliveryMode"]
+    if delivery_mode not in {"push", "pull"}:
+        _fail("APPLICATION_DESTINATION_MODE_INVALID")
+    return ApplicationDestination(
+        destination_id=_string(
+            candidate["destinationId"], 1, 256, "APPLICATION_DESTINATION_ID_INVALID"
+        ),
+        delivery_mode=delivery_mode,
+        opaque_token=_string(
+            candidate["opaqueToken"], 1, 4096, "APPLICATION_DESTINATION_TOKEN_INVALID"
+        ),
+    )
+
+
+@dataclass(frozen=True)
 class SmtpRecipient:
     address: str
     dsn: Optional[Mapping[str, Any]] = None
@@ -418,6 +450,46 @@ def parse_smtp_envelope(value: Any) -> SmtpEnvelope:
 
 
 @dataclass(frozen=True)
+class RecipientRouteRequest:
+    tenant_id: str
+    envelope: SmtpEnvelope
+    receipt_id: str
+
+
+def parse_recipient_route_request(value: Any) -> RecipientRouteRequest:
+    candidate = _object(value, {"schemaVersion", "tenantId", "envelope", "receiptId"})
+    if candidate["schemaVersion"] != "v1":
+        _fail("RECIPIENT_ROUTE_VERSION_INVALID")
+    return RecipientRouteRequest(
+        tenant_id=parse_uuid7(candidate["tenantId"], "TENANT_ID_INVALID"),
+        envelope=parse_smtp_envelope(candidate["envelope"]),
+        receipt_id=parse_uuid7(candidate["receiptId"], "RECEIPT_ID_INVALID"),
+    )
+
+
+@dataclass(frozen=True)
+class ReverseRouteRequest:
+    tenant_id: str
+    envelope: SmtpEnvelope
+    raw: RawMessageRef
+    opaque_reply_token: str
+
+
+def parse_reverse_route_request(
+    value: Any, maximum_bytes: int = MAX_RAW_BYTES
+) -> ReverseRouteRequest:
+    candidate = _object(value, {"tenantId", "envelope", "raw", "opaqueReplyToken"})
+    return ReverseRouteRequest(
+        tenant_id=parse_uuid7(candidate["tenantId"], "TENANT_ID_INVALID"),
+        envelope=parse_smtp_envelope(candidate["envelope"]),
+        raw=parse_raw_message_ref(candidate["raw"], maximum_bytes),
+        opaque_reply_token=_string(
+            candidate["opaqueReplyToken"], 1, 4096, "OPAQUE_REPLY_TOKEN_INVALID"
+        ),
+    )
+
+
+@dataclass(frozen=True)
 class RouteBindingSnapshot:
     binding_id: str
     binding_version: int
@@ -431,25 +503,30 @@ class RouteBindingSnapshot:
     capability_digest: str
     config_revision: str
     created_at: str
+    adapter_mode: Optional[str] = None
+    dispatch_transport: Optional[str] = None
 
     def to_wire(self) -> Mapping[str, Any]:
-        return MappingProxyType(
-            {
-                "schemaVersion": "v1",
-                "bindingId": self.binding_id,
-                "bindingVersion": self.binding_version,
-                "tenantId": self.tenant_id,
-                "domainALabel": self.domain_a_label,
-                "direction": self.direction,
-                "providerId": self.provider_id,
-                "adapterVersion": self.adapter_version,
-                "providerInstanceId": self.provider_instance_id,
-                "providerResourceIds": dict(self.provider_resource_ids),
-                "capabilityDigest": self.capability_digest,
-                "configRevision": self.config_revision,
-                "createdAt": self.created_at,
-            }
-        )
+        wire: dict[str, Any] = {
+            "schemaVersion": "v1",
+            "bindingId": self.binding_id,
+            "bindingVersion": self.binding_version,
+            "tenantId": self.tenant_id,
+            "domainALabel": self.domain_a_label,
+            "direction": self.direction,
+            "providerId": self.provider_id,
+            "adapterVersion": self.adapter_version,
+            "providerInstanceId": self.provider_instance_id,
+            "providerResourceIds": dict(self.provider_resource_ids),
+            "capabilityDigest": self.capability_digest,
+            "configRevision": self.config_revision,
+            "createdAt": self.created_at,
+        }
+        if self.adapter_mode is not None:
+            wire["adapterMode"] = self.adapter_mode
+        if self.dispatch_transport is not None:
+            wire["dispatchTransport"] = self.dispatch_transport
+        return MappingProxyType(wire)
 
 
 def parse_route_binding(value: Any) -> RouteBindingSnapshot:
@@ -468,7 +545,7 @@ def parse_route_binding(value: Any) -> RouteBindingSnapshot:
         "configRevision",
         "createdAt",
     }
-    candidate = _object(value, required)
+    candidate = _object(value, required, {"adapterMode", "dispatchTransport"})
     if (
         candidate["schemaVersion"] != "v1"
         or not isinstance(candidate["direction"], str)
@@ -491,6 +568,14 @@ def parse_route_binding(value: Any) -> RouteBindingSnapshot:
         capability_digest
     ):
         _fail("CAPABILITY_DIGEST_INVALID")
+    adapter_mode = candidate.get("adapterMode")
+    if adapter_mode is not None:
+        adapter_mode = _string(adapter_mode, 1, 64, "ADAPTER_MODE_INVALID")
+        if not re.fullmatch(r"^[a-z][a-z0-9_-]{0,63}$", adapter_mode):
+            _fail("ADAPTER_MODE_INVALID")
+    dispatch_transport = candidate.get("dispatchTransport")
+    if dispatch_transport is not None and dispatch_transport not in {"http", "smtp"}:
+        _fail("DISPATCH_TRANSPORT_INVALID")
     return RouteBindingSnapshot(
         binding_id=parse_uuid7(candidate["bindingId"], "BINDING_ID_INVALID"),
         binding_version=_integer(
@@ -515,6 +600,8 @@ def parse_route_binding(value: Any) -> RouteBindingSnapshot:
             candidate["configRevision"], 1, 128, "CONFIG_REVISION_INVALID"
         ),
         created_at=parse_rfc3339(candidate["createdAt"], "BINDING_CREATED_AT_INVALID"),
+        adapter_mode=adapter_mode,
+        dispatch_transport=dispatch_transport,
     )
 
 
@@ -525,6 +612,7 @@ class ApplicationDelivery:
     tenant_id: str
     envelope: SmtpEnvelope
     raw: RawMessageRef
+    destination: ApplicationDestination
     binding: RouteBindingSnapshot
     attempt: int
     occurred_at: str
@@ -542,6 +630,7 @@ def parse_application_delivery(
             "tenantId",
             "envelope",
             "raw",
+            "destination",
             "binding",
             "attempt",
             "occurredAt",
@@ -559,6 +648,7 @@ def parse_application_delivery(
         tenant_id=tenant_id,
         envelope=parse_smtp_envelope(candidate["envelope"]),
         raw=parse_raw_message_ref(candidate["raw"], maximum_bytes),
+        destination=parse_application_destination(candidate["destination"]),
         binding=binding,
         attempt=_integer(
             candidate["attempt"], 1, 9_007_199_254_740_991, "DELIVERY_ATTEMPT_INVALID"
@@ -567,6 +657,115 @@ def parse_application_delivery(
             candidate["occurredAt"], "DELIVERY_OCCURRED_AT_INVALID"
         ),
     )
+
+
+@dataclass(frozen=True)
+class RawAccessGrant:
+    grant_id: str
+    tenant_id: str
+    raw: RawMessageRef
+    audience: str
+    subject_id: str
+    purpose: str
+    single_use: bool
+    opaque_token: str
+    download_path: str
+    issued_at: str
+    expires_at: str
+
+
+def parse_raw_access_grant(
+    value: Any, maximum_bytes: int = MAX_RAW_BYTES
+) -> RawAccessGrant:
+    candidate = _object(
+        value,
+        {
+            "schemaVersion",
+            "grantId",
+            "tenantId",
+            "raw",
+            "audience",
+            "operation",
+            "subjectId",
+            "purpose",
+            "singleUse",
+            "opaqueToken",
+            "downloadPath",
+            "issuedAt",
+            "expiresAt",
+        },
+    )
+    if candidate["schemaVersion"] != "v1" or candidate["operation"] != "raw_download":
+        _fail("RAW_ACCESS_GRANT_VERSION_INVALID")
+    if candidate["purpose"] not in {
+        "application_delivery",
+        "operator_review",
+        "reconciliation",
+    }:
+        _fail("RAW_ACCESS_GRANT_PURPOSE_INVALID")
+    if not isinstance(candidate["singleUse"], bool):
+        _fail("RAW_ACCESS_GRANT_SINGLE_USE_INVALID")
+    grant_id = parse_uuid7(candidate["grantId"], "RAW_ACCESS_GRANT_ID_INVALID")
+    download_path = _string(
+        candidate["downloadPath"], 1, 256, "RAW_ACCESS_GRANT_PATH_INVALID"
+    )
+    if download_path != f"/v1/raw-access-grants/{grant_id}/raw":
+        _fail("RAW_ACCESS_GRANT_PATH_INVALID")
+    opaque_token = _string(
+        candidate["opaqueToken"], 43, 128, "RAW_ACCESS_GRANT_TOKEN_INVALID"
+    )
+    if not re.fullmatch(r"^[A-Za-z0-9_-]{43,128}$", opaque_token):
+        _fail("RAW_ACCESS_GRANT_TOKEN_INVALID")
+    audience = _string(
+        candidate["audience"], 1, 128, "RAW_ACCESS_GRANT_AUDIENCE_INVALID"
+    )
+    subject_id = _string(
+        candidate["subjectId"], 1, 128, "RAW_ACCESS_GRANT_SUBJECT_INVALID"
+    )
+    if not TOKEN_RE.fullmatch(audience) or not TOKEN_RE.fullmatch(subject_id):
+        _fail("RAW_ACCESS_GRANT_CONTEXT_INVALID")
+    return RawAccessGrant(
+        grant_id=grant_id,
+        tenant_id=parse_uuid7(candidate["tenantId"], "TENANT_ID_INVALID"),
+        raw=parse_raw_message_ref(candidate["raw"], maximum_bytes),
+        audience=audience,
+        subject_id=subject_id,
+        purpose=candidate["purpose"],
+        single_use=candidate["singleUse"],
+        opaque_token=opaque_token,
+        download_path=download_path,
+        issued_at=parse_rfc3339(
+            candidate["issuedAt"], "RAW_ACCESS_GRANT_ISSUED_AT_INVALID"
+        ),
+        expires_at=parse_rfc3339(
+            candidate["expiresAt"], "RAW_ACCESS_GRANT_EXPIRES_AT_INVALID"
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class ApplicationDeliveryCallback:
+    delivery: ApplicationDelivery
+    raw_access_grant: RawAccessGrant
+
+
+def parse_application_delivery_callback(
+    value: Any, maximum_bytes: int = MAX_RAW_BYTES
+) -> ApplicationDeliveryCallback:
+    candidate = _object(value, {"schemaVersion", "delivery", "rawAccessGrant"})
+    if candidate["schemaVersion"] != "v1":
+        _fail("APPLICATION_DELIVERY_CALLBACK_VERSION_INVALID")
+    delivery = parse_application_delivery(candidate["delivery"], maximum_bytes)
+    grant = parse_raw_access_grant(candidate["rawAccessGrant"], maximum_bytes)
+    if (
+        grant.tenant_id != delivery.tenant_id
+        or grant.raw != delivery.raw
+        or grant.subject_id != delivery.delivery_id
+        or grant.purpose != "application_delivery"
+        or not grant.single_use
+    ):
+        _fail("APPLICATION_DELIVERY_GRANT_INVALID")
+    return ApplicationDeliveryCallback(delivery, grant)
 
 
 @dataclass(frozen=True)

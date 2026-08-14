@@ -23,6 +23,7 @@ from .errors import (
     MailEdgeAmbiguousDeliveryError,
     MailEdgeAuthenticationError,
     MailEdgeContractError,
+    MailEdgeUnavailableError,
 )
 
 
@@ -119,13 +120,27 @@ class ReplayNonceRepository:
 @dataclass(frozen=True)
 class CallbackClaim:
     receipt_id: int
+    fence: int
     completed_acknowledgement: Optional[Mapping[str, object]]
 
 
 class CallbackReceiptRepository:
     def claim(
-        self, tenant_id: str, operation: str, subject_id: str, body_sha256: str
+        self,
+        tenant_id: str,
+        operation: str,
+        subject_id: str,
+        body_sha256: str,
+        lease_seconds: int,
     ) -> CallbackClaim:
+        if (
+            isinstance(lease_seconds, bool)
+            or not isinstance(lease_seconds, int)
+            or not 1 <= lease_seconds <= 900
+        ):
+            raise MailEdgeContractError("CALLBACK_LEASE_INVALID")
+        now = arrow.utcnow()
+        claimed_until = now.shift(seconds=lease_seconds)
         try:
             with Session.begin_nested():
                 receipt = MailEdgeCallbackReceipt(
@@ -134,28 +149,88 @@ class CallbackReceiptRepository:
                     subject_id=subject_id,
                     body_sha256=body_sha256,
                     status="processing",
+                    attempt_count=1,
+                    fence=1,
+                    claimed_until=claimed_until,
                 )
                 Session.add(receipt)
                 Session.flush()
             Session.commit()
-            return CallbackClaim(receipt.id, None)
+            return CallbackClaim(receipt.id, receipt.fence, None)
         except IntegrityError:
             pass
-        receipt = MailEdgeCallbackReceipt.filter_by(
-            tenant_id=tenant_id, operation=operation, subject_id=subject_id
-        ).first()
+        receipt = (
+            MailEdgeCallbackReceipt.query()
+            .filter_by(tenant_id=tenant_id, operation=operation, subject_id=subject_id)
+            .with_for_update()
+            .first()
+        )
         if receipt is None or receipt.body_sha256 != body_sha256:
             raise MailEdgeAmbiguousDeliveryError("CALLBACK_FINGERPRINT_CONFLICT")
-        if receipt.status != "completed" or receipt.acknowledgement is None:
+        if receipt.status == "completed" and receipt.acknowledgement is not None:
+            return CallbackClaim(
+                receipt.id, receipt.fence, dict(receipt.acknowledgement)
+            )
+        if receipt.status != "processing":
             raise MailEdgeAmbiguousDeliveryError("CALLBACK_OUTCOME_UNKNOWN")
-        return CallbackClaim(receipt.id, dict(receipt.acknowledgement))
+        if receipt.business_started_at is not None:
+            raise MailEdgeAmbiguousDeliveryError("CALLBACK_OUTCOME_UNKNOWN")
+        if receipt.claimed_until is not None and receipt.claimed_until > now:
+            raise MailEdgeUnavailableError("CALLBACK_ALREADY_IN_PROGRESS")
+        previous_fence = receipt.fence
+        updated = (
+            MailEdgeCallbackReceipt.query()
+            .filter(MailEdgeCallbackReceipt.id == receipt.id)
+            .filter(MailEdgeCallbackReceipt.status == "processing")
+            .filter(MailEdgeCallbackReceipt.fence == previous_fence)
+            .filter(
+                (MailEdgeCallbackReceipt.claimed_until.is_(None))
+                | (MailEdgeCallbackReceipt.claimed_until <= now)
+            )
+            .update(
+                {
+                    "attempt_count": receipt.attempt_count + 1,
+                    "fence": previous_fence + 1,
+                    "claimed_until": claimed_until,
+                },
+                synchronize_session=False,
+            )
+        )
+        if updated != 1:
+            Session.rollback()
+            raise MailEdgeUnavailableError("CALLBACK_ALREADY_IN_PROGRESS")
+        Session.commit()
+        return CallbackClaim(receipt.id, previous_fence + 1, None)
 
-    def complete(self, receipt_id: int, acknowledgement: Mapping[str, object]) -> None:
+    def start_business_effect(self, receipt_id: int, fence: int) -> None:
         updated = (
             MailEdgeCallbackReceipt.query()
             .filter(MailEdgeCallbackReceipt.id == receipt_id)
             .filter(MailEdgeCallbackReceipt.status == "processing")
-            .update({"status": "completed", "acknowledgement": dict(acknowledgement)})
+            .filter(MailEdgeCallbackReceipt.fence == fence)
+            .filter(MailEdgeCallbackReceipt.business_started_at.is_(None))
+            .update({"business_started_at": arrow.utcnow()})
+        )
+        if updated != 1:
+            Session.rollback()
+            raise MailEdgeAmbiguousDeliveryError("CALLBACK_START_CONFLICT")
+        Session.commit()
+
+    def complete(
+        self, receipt_id: int, fence: int, acknowledgement: Mapping[str, object]
+    ) -> None:
+        updated = (
+            MailEdgeCallbackReceipt.query()
+            .filter(MailEdgeCallbackReceipt.id == receipt_id)
+            .filter(MailEdgeCallbackReceipt.status == "processing")
+            .filter(MailEdgeCallbackReceipt.fence == fence)
+            .update(
+                {
+                    "status": "completed",
+                    "acknowledgement": dict(acknowledgement),
+                    "claimed_until": None,
+                }
+            )
         )
         if updated != 1:
             Session.rollback()
@@ -254,6 +329,46 @@ class RouteBindingProjectionRepository:
             binding_version=binding.binding_version,
         ).first()
         return projected is not None and projected.state in {"active", "draining"}
+
+    def synchronize(self, binding: RouteBindingSnapshot, state: str) -> None:
+        if state == "active":
+            self.activate(binding)
+            return
+        if state not in {"draining", "retired"}:
+            return
+        if binding.tenant_id != self._tenant_id or not self._domain_authorized(
+            binding.domain_a_label
+        ):
+            raise MailEdgeContractError(
+                "ROUTE_BINDING_DOMAIN_NOT_AUTHORIZED", http_status=404
+            )
+        projected = MailEdgeRouteBindingProjection.filter_by(
+            tenant_id=binding.tenant_id,
+            domain_a_label=binding.domain_a_label,
+            direction=binding.direction,
+            binding_id=binding.binding_id,
+            binding_version=binding.binding_version,
+        ).first()
+        if projected is None:
+            Session.add(
+                MailEdgeRouteBindingProjection(
+                    tenant_id=binding.tenant_id,
+                    domain_a_label=binding.domain_a_label,
+                    direction=binding.direction,
+                    binding_id=binding.binding_id,
+                    binding_version=binding.binding_version,
+                    state=state,
+                )
+            )
+        elif projected.state == "retired" and state != "retired":
+            raise MailEdgeContractError("ROUTE_BINDING_STATE_REGRESSION")
+        else:
+            projected.state = state
+        try:
+            Session.commit()
+        except IntegrityError:
+            Session.rollback()
+            raise MailEdgeAmbiguousDeliveryError("ROUTE_BINDING_PROJECTION_CONFLICT")
 
     def retire(self, binding: RouteBindingSnapshot) -> None:
         if binding.tenant_id != self._tenant_id:

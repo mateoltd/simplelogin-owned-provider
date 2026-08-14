@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import os
 import re
 import stat
@@ -25,6 +26,7 @@ class HttpLimits:
     breaker_failures: int
     breaker_reset_seconds: float
     pre_dispatch_retries: int
+    maximum_json_bytes: int = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,14 @@ class HostAuthentication:
     maximum_age_seconds: int
     maximum_future_skew_seconds: int
     verification_keys: Mapping[str, bytes]
+    maximum_request_bytes: int = 1024 * 1024
+    callback_lease_seconds: int = 60
+
+
+@dataclass(frozen=True)
+class OperatorAuthentication:
+    operator_bearer_token: Optional[str] = None
+    privileged_operator_bearer_token: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +54,7 @@ class MailEdgeConfiguration:
     maximum_raw_bytes: int
     http: HttpLimits
     host_authentication: HostAuthentication
+    operator_authentication: OperatorAuthentication = OperatorAuthentication()
 
 
 def _invalid(code: str) -> None:
@@ -124,6 +135,20 @@ def _secret(
     return value
 
 
+def _ascii_bearer_secret(reference: object, secret_directory: Path) -> str:
+    value = _secret(reference, secret_directory, minimum_bytes=32, maximum_bytes=4096)
+    try:
+        bearer = value.decode("ascii")
+    except UnicodeDecodeError:
+        _invalid("MAIL_EDGE_BEARER_TOKEN_INVALID")
+    if any(
+        character.isspace() or ord(character) < 33 or ord(character) > 126
+        for character in bearer
+    ):
+        _invalid("MAIL_EDGE_BEARER_TOKEN_INVALID")
+    return bearer
+
+
 def load_mail_edge_configuration(
     path_value: Optional[str],
 ) -> Optional[MailEdgeConfiguration]:
@@ -151,6 +176,7 @@ def load_mail_edge_configuration(
             "http",
             "hostAuthentication",
         },
+        {"operatorAuthentication"},
     )
     if value["schemaVersion"] != "v1":
         _invalid("MAIL_EDGE_CONFIG_VERSION_UNSUPPORTED")
@@ -187,6 +213,7 @@ def load_mail_edge_configuration(
             "breakerResetSeconds",
             "preDispatchRetries",
         },
+        {"maximumJsonBytes"},
     )
     auth = _strict_object(
         value["hostAuthentication"],
@@ -196,6 +223,7 @@ def load_mail_edge_configuration(
             "maximumFutureSkewSeconds",
             "verificationKeys",
         },
+        {"maximumRequestBytes", "callbackLeaseSeconds"},
     )
     audience = auth["audience"]
     if not isinstance(audience, str) or not TOKEN_RE.fullmatch(audience):
@@ -209,18 +237,23 @@ def load_mail_edge_configuration(
             _invalid("MAIL_EDGE_VERIFICATION_KEYS_INVALID")
         keys[key_id] = _secret(reference, secret_directory)
 
-    bearer = _secret(
-        value["bearerToken"], secret_directory, minimum_bytes=32, maximum_bytes=4096
-    )
-    try:
-        bearer_token = bearer.decode("ascii")
-    except UnicodeDecodeError:
-        _invalid("MAIL_EDGE_BEARER_TOKEN_INVALID")
-    if any(
-        character.isspace() or ord(character) < 33 or ord(character) > 126
-        for character in bearer_token
-    ):
-        _invalid("MAIL_EDGE_BEARER_TOKEN_INVALID")
+    bearer_token = _ascii_bearer_secret(value["bearerToken"], secret_directory)
+
+    operator_token: Optional[str] = None
+    privileged_operator_token: Optional[str] = None
+    if "operatorAuthentication" in value:
+        operator_authentication = _strict_object(
+            value["operatorAuthentication"],
+            {"operatorBearerToken", "privilegedOperatorBearerToken"},
+        )
+        operator_token = _ascii_bearer_secret(
+            operator_authentication["operatorBearerToken"], secret_directory
+        )
+        privileged_operator_token = _ascii_bearer_secret(
+            operator_authentication["privilegedOperatorBearerToken"], secret_directory
+        )
+        if hmac.compare_digest(operator_token, privileged_operator_token):
+            _invalid("MAIL_EDGE_OPERATOR_TOKENS_REUSED")
 
     try:
         tenant_id = parse_uuid7(value["tenantId"], "MAIL_EDGE_TENANT_ID_INVALID")
@@ -254,6 +287,12 @@ def load_mail_edge_configuration(
             pre_dispatch_retries=_integer(
                 http["preDispatchRetries"], 0, 3, "MAIL_EDGE_RETRY_POLICY_INVALID"
             ),
+            maximum_json_bytes=_integer(
+                http.get("maximumJsonBytes", 1024 * 1024),
+                1024,
+                4 * 1024 * 1024,
+                "MAIL_EDGE_JSON_LIMIT_INVALID",
+            ),
         ),
         host_authentication=HostAuthentication(
             audience=audience,
@@ -267,6 +306,22 @@ def load_mail_edge_configuration(
                 "MAIL_EDGE_SIGNATURE_SKEW_INVALID",
             ),
             verification_keys=MappingProxyType(keys),
+            maximum_request_bytes=_integer(
+                auth.get("maximumRequestBytes", 1024 * 1024),
+                1024,
+                1024 * 1024,
+                "MAIL_EDGE_HOST_REQUEST_LIMIT_INVALID",
+            ),
+            callback_lease_seconds=_integer(
+                auth.get("callbackLeaseSeconds", 60),
+                1,
+                900,
+                "MAIL_EDGE_CALLBACK_LEASE_INVALID",
+            ),
+        ),
+        operator_authentication=OperatorAuthentication(
+            operator_bearer_token=operator_token,
+            privileged_operator_bearer_token=privileged_operator_token,
         ),
     )
 

@@ -11,6 +11,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESSIV
 
 from .contracts import (
+    ApplicationDestination,
     RawMessageRef,
     SmtpEnvelope,
     SmtpRecipient,
@@ -59,6 +60,9 @@ class AliasRoutingRepository(Protocol):
     def resolve_reverse(
         self, reply_address: str, domain: str
     ) -> Optional[ReverseAliasRoute]:
+        ...
+
+    def resolve_destination(self, alias_id: int) -> Optional[AliasRoute]:
         ...
 
 
@@ -180,6 +184,28 @@ class RecipientRouter:
         if not destinations:
             raise MailEdgeAuthorizationError("RECIPIENTS_NOT_RESOLVED")
         return tuple(sorted(destinations, key=lambda item: item["destinationId"]))
+
+    def resolve_destination(
+        self, destination: ApplicationDestination, envelope: SmtpEnvelope
+    ) -> AliasRoute:
+        if destination.delivery_mode != "push":
+            raise MailEdgeAuthorizationError("APPLICATION_DESTINATION_NOT_FOUND")
+        alias_id = self._tokens.decode(destination.opaque_token, "inbound")
+        expected_destination_id = self._tokens.destination_id(alias_id, "inbound")
+        if not hmac.compare_digest(
+            destination.destination_id.encode("utf-8"),
+            expected_destination_id.encode("ascii"),
+        ):
+            raise MailEdgeAuthorizationError("APPLICATION_DESTINATION_NOT_FOUND")
+        route = self._repository.resolve_destination(alias_id)
+        if route is None:
+            raise MailEdgeAuthorizationError("APPLICATION_DESTINATION_NOT_FOUND")
+        recipients = {
+            canonical_mailbox(recipient.address)[0] for recipient in envelope.rcpt_to
+        }
+        if canonical_mailbox(route.address)[0] not in recipients:
+            raise MailEdgeAuthorizationError("APPLICATION_DESTINATION_NOT_FOUND")
+        return route
 
 
 class ReverseRouteResolver:

@@ -73,3 +73,30 @@ class SimpleLoginAliasRoutingRepository:
             target_address=contact.website_email,
             authorized_senders=tuple(contact.alias.authorized_addresses()),
         )
+
+    def resolve_destination(self, alias_id: int) -> Optional[AliasRoute]:
+        alias = Alias.get(alias_id)
+        if (
+            alias is None
+            or not alias.enabled
+            or alias.is_trashed()
+            or not alias.user.can_send_or_receive()
+        ):
+            return None
+        address = alias.email
+        domain = address.rsplit("@", 1)[1]
+        public_domain = (
+            SLDomain.filter_by(domain=domain).with_entities(SLDomain.id).first()
+        )
+        if public_domain is not None:
+            return AliasRoute(alias.id, address, domain)
+        custom_domain = CustomDomain.filter_by(
+            id=alias.custom_domain_id,
+            domain=domain,
+            pending_deletion=False,
+            ownership_verified=True,
+            verified=True,
+        ).first()
+        if custom_domain is None:
+            return None
+        return AliasRoute(alias.id, address, domain)

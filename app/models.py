@@ -4244,6 +4244,10 @@ class MailEdgeCallbackReceipt(Base, ModelMixin):
         sa.String(16), nullable=False, default="processing", server_default="processing"
     )
     acknowledgement = sa.Column(sa.JSON, nullable=True)
+    attempt_count = sa.Column(sa.Integer, nullable=False, default=0, server_default="0")
+    fence = sa.Column(sa.BigInteger, nullable=False, default=0, server_default="0")
+    claimed_until = sa.Column(ArrowType, nullable=True)
+    business_started_at = sa.Column(ArrowType, nullable=True)
 
     __table_args__ = (
         sa.UniqueConstraint(
@@ -4253,7 +4257,12 @@ class MailEdgeCallbackReceipt(Base, ModelMixin):
             "status IN ('processing', 'completed')",
             name="ck_mail_edge_callback_receipt_status",
         ),
+        sa.CheckConstraint(
+            "attempt_count >= 0", name="ck_mail_edge_callback_attempt_count"
+        ),
+        sa.CheckConstraint("fence >= 0", name="ck_mail_edge_callback_fence"),
         sa.Index("ix_mail_edge_callback_tenant_operation", "tenant_id", "operation"),
+        sa.Index("ix_mail_edge_callback_claimed_until", "claimed_until"),
     )
 
 

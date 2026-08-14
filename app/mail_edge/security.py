@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import re
@@ -18,6 +19,18 @@ SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 OPERATIONS = frozenset(
     {"application_delivery", "application_feedback", "recipient_route", "reverse_route"}
 )
+HOST_SIGNATURE_HEADERS = {
+    "schemaVersion": "x-mail-edge-signature-version",
+    "algorithm": "x-mail-edge-signature-algorithm",
+    "keyId": "x-mail-edge-key-id",
+    "audience": "x-mail-edge-signature-audience",
+    "subjectId": "x-mail-edge-subject-id",
+    "nonce": "x-mail-edge-nonce",
+    "bodySha256": "x-mail-edge-body-sha256",
+    "operation": "x-mail-edge-operation",
+    "timestamp": "x-mail-edge-timestamp",
+    "signature": "x-mail-edge-signature",
+}
 
 
 @dataclass(frozen=True)
@@ -51,6 +64,8 @@ def _reject() -> None:
 
 
 def parse_host_signature(value: Any) -> HostSignature:
+    if isinstance(value, HostSignature):
+        value = {**value.claims, "signature": value.signature}
     if not isinstance(value, dict) or set(value) != {
         "schemaVersion",
         "algorithm",
@@ -97,6 +112,25 @@ def parse_host_signature(value: Any) -> HostSignature:
         timestamp=value["timestamp"],
         signature=value["signature"],
     )
+
+
+def parse_host_signature_headers(headers: Mapping[str, Any]) -> HostSignature:
+    if not callable(getattr(headers, "get", None)):
+        _reject()
+    value: dict[str, str] = {}
+    for claim, header_name in HOST_SIGNATURE_HEADERS.items():
+        getlist = getattr(headers, "getlist", None)
+        if callable(getlist):
+            observed = getlist(header_name)
+            if len(observed) != 1:
+                _reject()
+            header_value = observed[0]
+        else:
+            header_value = headers.get(header_name)
+        if not isinstance(header_value, str):
+            _reject()
+        value[claim] = header_value
+    return parse_host_signature(value)
 
 
 def _signing_input(signature: HostSignature) -> bytes:
@@ -155,7 +189,7 @@ def verify_host_signature(
         _reject()
     try:
         supplied = base64.urlsafe_b64decode(signed.signature + "=")
-    except ValueError:
+    except (binascii.Error, ValueError):
         _reject()
     canonical_signature = (
         base64.urlsafe_b64encode(supplied).rstrip(b"=").decode("ascii")
