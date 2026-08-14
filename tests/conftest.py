@@ -10,12 +10,13 @@ os.environ["CONFIG"] = os.path.abspath(
 )
 import sqlalchemy
 
-from app.db import Session, engine, connection
+from app.db import Session, engine
 from app.rate_limiter import set_rate_limit_enabled
 
 # The production registry is engine-bound so concurrent requests receive
 # independent pooled connections. Tests deliberately share this connection to
 # retain the suite's outer-transaction rollback isolation.
+connection = engine.connect()
 Session.remove()
 Session.configure(bind=connection)
 

@@ -9,12 +9,10 @@ from app import config
 engine = create_engine(
     config.DB_URI, connect_args={"application_name": config.DB_CONN_NAME}
 )
-connection = engine.connect()
 
 # Production sessions must acquire independent pooled connections. Binding every
 # thread-local Session to one process-global Connection corrupts transactions as
-# soon as two HTTP callbacks overlap. ``connection`` remains available for the
-# test suite's outer rollback transaction and is installed there explicitly.
+# soon as two HTTP callbacks overlap.
 Session = scoped_session(sessionmaker(bind=engine))
 
 # Session is actually a proxy, more info on
