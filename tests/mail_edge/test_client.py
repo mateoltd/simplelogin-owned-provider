@@ -1,6 +1,8 @@
 import hashlib
 import io
 import json
+import tempfile
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -9,8 +11,10 @@ import requests
 from app.mail_edge.client import CircuitBreaker, MailEdgeClient
 from app.mail_edge.configuration import (
     HostAuthentication,
+    HostDeliveryLimits,
     HttpLimits,
     MailEdgeConfiguration,
+    MimeParserLimits,
     OperatorAuthentication,
 )
 from app.mail_edge.contracts import (
@@ -34,9 +38,12 @@ REPLAY_BLOB_ID = "01890f31-7b4a-7cc8-8d32-2f6e9a401115"
 
 
 class Response:
-    def __init__(self, status_code, body):
+    def __init__(self, status_code, body, headers=None):
         self.status_code = status_code
         self._body = body
+        self.headers = headers or (
+            {"Content-Type": "application/problem+json"} if status_code >= 400 else {}
+        )
 
     def json(self):
         return self._body
@@ -60,6 +67,7 @@ class Session:
     def __init__(self, outcomes):
         self.outcomes = list(outcomes)
         self.calls = []
+        self.close_calls = 0
 
     def request(self, method, url, **kwargs):
         self.calls.append((method, url, kwargs))
@@ -67,6 +75,9 @@ class Session:
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
+
+    def close(self):
+        self.close_calls += 1
 
 
 def configuration(retries=1):
@@ -78,6 +89,18 @@ def configuration(retries=1):
         maximum_raw_bytes=26214400,
         http=HttpLimits(1, 5, 2, 3, 10, retries),
         host_authentication=HostAuthentication("host", 300, 30, {"key": b"k" * 32}),
+        host_delivery=HostDeliveryLimits(
+            4,
+            2,
+            52_428_800,
+            268_435_456,
+            68_719_476_736,
+            0,
+            4,
+            8_388_608,
+            tempfile.gettempdir(),
+            MimeParserLimits(256, 16, 1024, 1_048_576, 1_048_576, 104_857_600, 10),
+        ),
         operator_authentication=OperatorAuthentication("u" * 32, "p" * 32),
     )
 
@@ -434,3 +457,124 @@ def test_remote_problem_retryability_is_explicit_and_only_not_sent_is_safe():
         )
     )
     assert malformed.code == "MAIL_EDGE_REQUEST_FAILED"
+
+
+def test_client_closes_only_owned_sessions_and_close_is_idempotent():
+    external = Session([])
+    client = MailEdgeClient(configuration(), session=external)
+    assert client.close()
+    assert client.close()
+    assert external.close_calls == 0
+    with pytest.raises(MailEdgeUnavailableError) as raised:
+        client.ready()
+    assert raised.value.code == "MAIL_EDGE_CLIENT_CLOSED"
+
+    transferred = Session([])
+    client = MailEdgeClient(
+        configuration(), session=transferred, take_session_ownership=True
+    )
+    assert client.close()
+    assert client.close()
+    assert transferred.close_calls == 1
+
+
+def test_close_waits_for_in_flight_response_and_rejects_replacement_work():
+    entered = threading.Event()
+    release = threading.Event()
+    raw = b"message"
+
+    class BlockingResponse(StreamingResponse):
+        def iter_content(self, chunk_size):
+            entered.set()
+            assert release.wait(timeout=2)
+            yield json.dumps(raw_ref(raw), separators=(",", ":")).encode()
+
+    session = Session([BlockingResponse(201, b"")])
+    client = MailEdgeClient(
+        configuration(), session=session, take_session_ownership=True
+    )
+    operation_result = []
+    close_result = []
+    operation = threading.Thread(
+        target=lambda: operation_result.append(client.store_raw_message(raw))
+    )
+    operation.start()
+    assert entered.wait(timeout=2)
+
+    assert client.close(0) is False
+    closing = threading.Thread(target=lambda: close_result.append(client.close(2)))
+    closing.start()
+    with pytest.raises(MailEdgeUnavailableError):
+        client.ready()
+    assert closing.is_alive()
+
+    release.set()
+    operation.join(timeout=2)
+    closing.join(timeout=2)
+    assert operation_result[0].size == len(raw)
+    assert close_result == [True]
+    assert session.close_calls == 1
+
+
+def test_close_timeout_can_be_resumed_without_closing_an_active_session():
+    entered = threading.Event()
+    release = threading.Event()
+    raw = b"message"
+
+    class BlockingResponse(StreamingResponse):
+        def iter_content(self, chunk_size):
+            entered.set()
+            assert release.wait(timeout=2)
+            yield json.dumps(raw_ref(raw), separators=(",", ":")).encode()
+
+    session = Session([BlockingResponse(201, b"")])
+    client = MailEdgeClient(
+        configuration(), session=session, take_session_ownership=True
+    )
+    operation = threading.Thread(target=lambda: client.store_raw_message(raw))
+    operation.start()
+    assert entered.wait(timeout=2)
+    assert client.close(0) is False
+    assert session.close_calls == 0
+    release.set()
+    operation.join(timeout=2)
+    assert client.close(1)
+    assert session.close_calls == 1
+
+
+def test_remote_problem_preserves_only_typed_safe_details_and_unknown_fallback():
+    problem = MailEdgeClient(configuration(), session=Session([]))._problem(
+        Response(
+            429,
+            {
+                "schemaVersion": "v1",
+                "type": "https://mail-edge.dev/problems/rate-limited",
+                "title": "Rate limited",
+                "status": 429,
+                "code": "rate-limited",
+                "deliveryCertainty": "not_sent",
+                "retryable": True,
+                "safeDetails": {"retryAfterSeconds": 2},
+            },
+        )
+    )
+    assert problem.safe_details == {"retryAfterSeconds": 2}
+
+    invalid = MailEdgeClient(configuration(), session=Session([]))._problem(
+        Response(
+            503,
+            {
+                "schemaVersion": "v1",
+                "type": "https://mail-edge.dev/problems/host-unavailable",
+                "title": "Host unavailable",
+                "status": 503,
+                "code": "host-unavailable",
+                "deliveryCertainty": "not_sent",
+                "retryable": True,
+                "safeDetails": {"limit": 10**1000},
+            },
+        )
+    )
+    assert invalid.code == "MAIL_EDGE_REQUEST_FAILED"
+    assert invalid.delivery_certainty == "unknown"
+    assert not invalid.retryable

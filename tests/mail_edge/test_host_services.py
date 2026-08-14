@@ -1,4 +1,5 @@
 import hashlib
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -18,10 +19,25 @@ from app.mail_edge.host_services import (
     ApplicationDeliveryService,
     ApplicationFeedbackService,
 )
+from app.mail_edge.configuration import MimeParserLimits
+from app.mail_edge.mime import BoundedMimeParserService
+from app.mail_edge.resources import RawMessageResource
 
 
 TENANT_ID = "01890f31-7b4a-7cc8-8d32-2f6e9a401111"
 DELIVERY_ID = "01890f31-7b4a-7cc8-8d32-2f6e9a401112"
+
+
+def parser():
+    return BoundedMimeParserService(
+        MimeParserLimits(64, 8, 256, 256 * 1024, 256 * 1024, 4 * 1024 * 1024, 5)
+    )
+
+
+def deliver_raw(service, delivery, raw, callback_body):
+    with RawMessageResource(4 * 1024 * 1024, tempfile.gettempdir()) as resource:
+        resource.write(raw)
+        return service.deliver(delivery, resource, callback_body)
 
 
 @dataclass
@@ -114,10 +130,13 @@ def test_application_delivery_verifies_raw_and_acks_only_after_host_acceptance()
         Destinations(),
         lambda envelope, message: delivered.append((envelope, message))
         or "250 accepted",
+        parser(),
         clock=lambda: datetime(2026, 8, 13, 12, 1, tzinfo=timezone.utc),
     )
     callback_body = b'{"schemaVersion":"v1","deliveryId":"fixture"}'
-    acknowledgement = service.deliver(application_delivery(raw), raw, callback_body)
+    acknowledgement = deliver_raw(
+        service, application_delivery(raw), raw, callback_body
+    )
     assert acknowledgement == {
         "deliveryId": DELIVERY_ID,
         "acceptedAt": "2026-08-13T12:01:00Z",
@@ -153,9 +172,10 @@ def test_application_delivery_fails_closed_on_ambiguous_recipient_raw_or_binding
             bindings,
             destinations,
             lambda envelope, message: "250 accepted",
+            parser(),
         )
         with pytest.raises(MailEdgeContractError):
-            service.deliver(delivery, supplied, b"callback")
+            deliver_raw(service, delivery, supplied, b"callback")
 
 
 def test_application_delivery_does_not_ack_rejected_local_handoff():
@@ -167,9 +187,10 @@ def test_application_delivery_does_not_ack_rejected_local_handoff():
         Bindings(),
         Destinations(),
         lambda envelope, message: "451 retry",
+        parser(),
     )
     with pytest.raises(MailEdgeAmbiguousDeliveryError):
-        service.deliver(application_delivery(raw), raw, b"callback")
+        deliver_raw(service, application_delivery(raw), raw, b"callback")
     assert callbacks.completed == []
 
 

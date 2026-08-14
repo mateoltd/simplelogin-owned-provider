@@ -811,8 +811,11 @@ def parse_application_feedback(value: Any) -> ApplicationFeedback:
         if isinstance(item, bool):
             normalized[key] = item
         elif (
-            isinstance(item, (int, float))
+            isinstance(item, int)
             and not isinstance(item, bool)
+            and abs(item) <= 9_007_199_254_740_991
+        ) or (
+            isinstance(item, float)
             and math.isfinite(item)
             and abs(item) <= 9_007_199_254_740_991
         ):

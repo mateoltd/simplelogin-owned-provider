@@ -137,6 +137,24 @@ PROBLEM_POLICIES: Mapping[str, tuple[str, str, int, str]] = {
     ),
 }
 
+PROBLEM_SAFE_DETAIL_KEYS: Mapping[str, frozenset[str]] = {
+    "VALIDATION_FAILED": frozenset({"field", "reason", "limit", "actual"}),
+    "NOT_FOUND": frozenset({"resourceType"}),
+    "CONFLICT": frozenset({"resourceType", "expectedVersion"}),
+    "IDEMPOTENCY_CONFLICT": frozenset({"existingIntentId"}),
+    "BINDING_UNAVAILABLE": frozenset({"direction"}),
+    "CAPABILITY_UNSUPPORTED": frozenset({"capability"}),
+    "RATE_LIMITED": frozenset({"retryAfterSeconds"}),
+    "INGRESS_LIMIT_EXCEEDED": frozenset({"limit", "actual"}),
+    "INGRESS_FAILED": frozenset({"reason"}),
+    "WORKFLOW_CONFLICT": frozenset({"expectedVersion"}),
+    "STALE_FENCE": frozenset({"expectedFence"}),
+    "ILLEGAL_TRANSITION": frozenset({"from", "event"}),
+    "PROVIDER_NOT_SENT": frozenset({"phase", "evidenceCode"}),
+    "PROVIDER_UNKNOWN": frozenset({"phase", "evidenceCode"}),
+    "PROVIDER_REJECTED": frozenset({"evidenceCode"}),
+}
+
 
 def _problem_code(error: MailEdgeError) -> str:
     if error.code in PROBLEM_POLICIES:
@@ -178,7 +196,7 @@ def project_problem(
     certainty = (
         error.delivery_certainty
         if error.delivery_certainty in {"not_sent", "accepted", "unknown"}
-        else "not_sent"
+        else "unknown"
     )
     retryable = bool(error.retryable and certainty != "unknown")
     problem: dict[str, object] = {
@@ -195,6 +213,14 @@ def project_problem(
         problem["instance"] = instance[:256]
     if trace_id:
         problem["traceId"] = trace_id[:64]
+    allowed_safe_details = PROBLEM_SAFE_DETAIL_KEYS.get(internal_code, frozenset())
+    safe_details = {
+        key: value
+        for key, value in (error.safe_details or {}).items()
+        if key in allowed_safe_details
+    }
+    if safe_details:
+        problem["safeDetails"] = safe_details
     observed_at = occurred_at or datetime.now(timezone.utc)
     problem["occurredAt"] = (
         observed_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")

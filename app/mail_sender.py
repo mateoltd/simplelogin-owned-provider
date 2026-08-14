@@ -5,6 +5,7 @@ import email
 import json
 import os
 import random
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
@@ -106,6 +107,9 @@ class OutboundMailTransport(Protocol):
     def send(self, send_request: SendRequest) -> bool:
         ...
 
+    def close(self, timeout_seconds: Optional[float] = None) -> bool:
+        ...
+
 
 class MailSender:
     def __init__(self):
@@ -114,11 +118,42 @@ class MailSender:
         self._randomize_smtp_hosts = True
         self._emails_sent: List[SendRequest] = []
         self._mail_edge_transport: Optional[OutboundMailTransport] = None
+        self._mail_edge_transport_owned = False
+        self._mail_edge_transport_lock = threading.Lock()
 
     def set_mail_edge_transport(
-        self, transport: Optional[OutboundMailTransport]
+        self,
+        transport: Optional[OutboundMailTransport],
+        *,
+        transfer_ownership: bool = False,
     ) -> None:
-        self._mail_edge_transport = transport
+        if not isinstance(transfer_ownership, bool):
+            raise TypeError("Mail Edge transport ownership must be explicit.")
+        with self._mail_edge_transport_lock:
+            previous = self._mail_edge_transport
+            previous_owned = self._mail_edge_transport_owned
+            if previous is transport:
+                self._mail_edge_transport_owned = previous_owned or transfer_ownership
+                return
+            self._mail_edge_transport = transport
+            self._mail_edge_transport_owned = (
+                transport is not None and transfer_ownership
+            )
+        if previous is not None and previous_owned:
+            previous.close()
+
+    def release_mail_edge_transport(
+        self, transport: OutboundMailTransport, *, timeout_seconds: float
+    ) -> Optional[bool]:
+        with self._mail_edge_transport_lock:
+            if self._mail_edge_transport is not transport:
+                return None
+            owned = self._mail_edge_transport_owned
+            self._mail_edge_transport = None
+            self._mail_edge_transport_owned = False
+        if owned:
+            return transport.close(timeout_seconds=timeout_seconds)
+        return True
 
     def store_emails_instead_of_sending(self, store_emails: bool = True):
         self._store_emails = store_emails
@@ -156,8 +191,10 @@ class MailSender:
                 send_request.msg[headers.TO],
             )
             return True
-        if send_request.use_mail_edge and self._mail_edge_transport is not None:
-            return self._mail_edge_transport.send(send_request)
+        with self._mail_edge_transport_lock:
+            mail_edge_transport = self._mail_edge_transport
+        if send_request.use_mail_edge and mail_edge_transport is not None:
+            return mail_edge_transport.send(send_request)
         if not self._pool:
             return self._send_to_smtp(send_request, retries)
         else:

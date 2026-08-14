@@ -36,31 +36,32 @@ from .errors import (
     MailEdgeContractError,
     MailEdgeError,
     MailEdgeUnavailableError,
+    normalize_safe_details,
 )
 
 
 REMOTE_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
-REMOTE_PROBLEM_CODES = {
-    "validation-failed": "VALIDATION_FAILED",
-    "authentication-failed": "AUTHENTICATION_FAILED",
-    "authorization-failed": "AUTHORIZATION_FAILED",
-    "not-found": "NOT_FOUND",
-    "conflict": "CONFLICT",
-    "idempotency-conflict": "IDEMPOTENCY_CONFLICT",
-    "binding-unavailable": "BINDING_UNAVAILABLE",
-    "capability-unsupported": "CAPABILITY_UNSUPPORTED",
-    "rate-limited": "RATE_LIMITED",
-    "ingress-limit-exceeded": "INGRESS_LIMIT_EXCEEDED",
-    "ingress-failed": "INGRESS_FAILED",
-    "storage-unavailable": "STORAGE_UNAVAILABLE",
-    "workflow-conflict": "WORKFLOW_CONFLICT",
-    "stale-fence": "STALE_FENCE",
-    "illegal-transition": "ILLEGAL_TRANSITION",
-    "provider-not-sent": "PROVIDER_NOT_SENT",
-    "provider-outcome-unknown": "PROVIDER_UNKNOWN",
-    "provider-rejected": "PROVIDER_REJECTED",
-    "host-unavailable": "HOST_UNAVAILABLE",
-    "internal": "INTERNAL",
+REMOTE_PROBLEM_POLICIES = {
+    "validation-failed": ("VALIDATION_FAILED", 400),
+    "authentication-failed": ("AUTHENTICATION_FAILED", 401),
+    "authorization-failed": ("AUTHORIZATION_FAILED", 403),
+    "not-found": ("NOT_FOUND", 404),
+    "conflict": ("CONFLICT", 409),
+    "idempotency-conflict": ("IDEMPOTENCY_CONFLICT", 409),
+    "binding-unavailable": ("BINDING_UNAVAILABLE", 409),
+    "capability-unsupported": ("CAPABILITY_UNSUPPORTED", 422),
+    "rate-limited": ("RATE_LIMITED", 429),
+    "ingress-limit-exceeded": ("INGRESS_LIMIT_EXCEEDED", 413),
+    "ingress-failed": ("INGRESS_FAILED", 400),
+    "storage-unavailable": ("STORAGE_UNAVAILABLE", 503),
+    "workflow-conflict": ("WORKFLOW_CONFLICT", 409),
+    "stale-fence": ("STALE_FENCE", 409),
+    "illegal-transition": ("ILLEGAL_TRANSITION", 409),
+    "provider-not-sent": ("PROVIDER_NOT_SENT", 502),
+    "provider-outcome-unknown": ("PROVIDER_UNKNOWN", 502),
+    "provider-rejected": ("PROVIDER_REJECTED", 502),
+    "host-unavailable": ("HOST_UNAVAILABLE", 503),
+    "internal": ("INTERNAL", 500),
 }
 
 
@@ -226,17 +227,21 @@ def _validate_decision_evidence(value: Any) -> Mapping[str, object]:
         raise MailEdgeContractError("QUARANTINE_EVIDENCE_INVALID")
     normalized: dict[str, object] = {}
     for key, item in value.items():
+        invalid_number = (
+            isinstance(item, int)
+            and not isinstance(item, bool)
+            and abs(item) > 9_007_199_254_740_991
+        ) or (
+            isinstance(item, float)
+            and (not math.isfinite(item) or abs(item) > 9_007_199_254_740_991)
+        )
         if (
             not isinstance(key, str)
             or not re.fullmatch(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$", key)
             or isinstance(item, (dict, list, tuple))
             or not isinstance(item, (str, int, float, bool))
             or (isinstance(item, str) and len(item) > 512)
-            or (
-                isinstance(item, (int, float))
-                and not isinstance(item, bool)
-                and (not math.isfinite(item) or abs(item) > 9_007_199_254_740_991)
-            )
+            or invalid_number
         ):
             raise MailEdgeContractError("QUARANTINE_EVIDENCE_INVALID")
         normalized[key] = item
@@ -290,29 +295,53 @@ class CircuitBreaker:
 
 
 class MailEdgeClient:
-    """Bounded tenant client for the exact b6 reference-service HTTP surface."""
+    """Bounded tenant client for the frozen v1 reference-service HTTP surface."""
 
     def __init__(
         self,
         configuration: MailEdgeConfiguration,
         *,
         session: Optional[requests.Session] = None,
+        take_session_ownership: bool = False,
         breaker: Optional[CircuitBreaker] = None,
     ):
+        if not isinstance(take_session_ownership, bool):
+            raise TypeError("Mail Edge session ownership must be explicit.")
         self._configuration = configuration
+        session_was_created = session is None
         if session is None:
             session = requests.Session()
             session.trust_env = False
         self._session = session
+        self._owns_session = session_was_created or take_session_ownership
         self._admission = threading.BoundedSemaphore(configuration.http.concurrency)
         self._breaker = breaker or CircuitBreaker(
             configuration.http.breaker_failures,
             configuration.http.breaker_reset_seconds,
         )
+        self._lifecycle = threading.Condition()
+        self._accepting_operations = True
+        self._active_operations = 0
+        self._session_close_started = False
+        self._closed = False
+        self._close_succeeded = False
 
     @property
     def tenant_id(self) -> str:
         return self._configuration.tenant_id
+
+    def _begin_operation(self) -> None:
+        with self._lifecycle:
+            if not self._accepting_operations:
+                raise MailEdgeUnavailableError("MAIL_EDGE_CLIENT_CLOSED")
+            self._active_operations += 1
+
+    def _finish_operation(self) -> None:
+        with self._lifecycle:
+            if self._active_operations <= 0:
+                raise RuntimeError("Mail Edge client operation accounting is invalid.")
+            self._active_operations -= 1
+            self._lifecycle.notify_all()
 
     def _headers(self, content_type: Optional[str] = None) -> dict[str, str]:
         result = {
@@ -351,7 +380,10 @@ class MailEdgeClient:
         before_attempt: Optional[Callable[[], None]] = None,
         **kwargs,
     ) -> requests.Response:
+        self._begin_operation()
+        operation_owned = True
         if not self._admission.acquire(blocking=False):
+            self._finish_operation()
             raise MailEdgeBackpressureError()
         admission_owned = True
         try:
@@ -381,7 +413,9 @@ class MailEdgeClient:
                     else:
                         self._breaker.success()
                     setattr(response, "_mail_edge_admission_owned", True)
+                    setattr(response, "_mail_edge_operation_owned", True)
                     admission_owned = False
+                    operation_owned = False
                     return response
                 except requests.ConnectTimeout:
                     if attempt + 1 == attempts:
@@ -407,13 +441,20 @@ class MailEdgeClient:
         finally:
             if admission_owned:
                 self._admission.release()
+            if operation_owned:
+                self._finish_operation()
 
     def _close_response(self, response: requests.Response) -> None:
-        if hasattr(response, "close"):
-            response.close()
-        if getattr(response, "_mail_edge_admission_owned", False):
-            setattr(response, "_mail_edge_admission_owned", False)
-            self._admission.release()
+        try:
+            if hasattr(response, "close"):
+                response.close()
+        finally:
+            if getattr(response, "_mail_edge_admission_owned", False):
+                setattr(response, "_mail_edge_admission_owned", False)
+                self._admission.release()
+            if getattr(response, "_mail_edge_operation_owned", False):
+                setattr(response, "_mail_edge_operation_owned", False)
+                self._finish_operation()
 
     def _response_json(self, response: requests.Response):
         try:
@@ -436,7 +477,22 @@ class MailEdgeClient:
         certainty = "unknown"
         code = "MAIL_EDGE_REQUEST_FAILED"
         retryable = False
+        safe_details = None
         try:
+            response_headers = getattr(response, "headers", {})
+            content_type = (
+                response_headers.get("Content-Type", "")
+                .split(";", 1)[0]
+                .strip()
+                .lower()
+            )
+            if (
+                content_type != "application/problem+json"
+                or response_headers.get("Content-Encoding") is not None
+            ):
+                raise MailEdgeContractError(
+                    "MAIL_EDGE_PROBLEM_INVALID", http_status=502
+                )
             body = self._response_json(response)
             required = {
                 "schemaVersion",
@@ -462,6 +518,7 @@ class MailEdgeClient:
                 or body["status"] != response.status_code
                 or not isinstance(body["retryable"], bool)
                 or body["deliveryCertainty"] not in {"not_sent", "accepted", "unknown"}
+                or (body["deliveryCertainty"] == "unknown" and body["retryable"])
             ):
                 raise MailEdgeContractError(
                     "MAIL_EDGE_PROBLEM_INVALID", http_status=502
@@ -470,7 +527,7 @@ class MailEdgeClient:
             if (
                 not isinstance(remote_code, str)
                 or not REMOTE_ERROR_CODE_RE.fullmatch(remote_code)
-                or remote_code not in REMOTE_PROBLEM_CODES
+                or remote_code not in REMOTE_PROBLEM_POLICIES
                 or body["type"] != f"https://mail-edge.dev/problems/{remote_code}"
                 or not isinstance(body["title"], str)
                 or not 1 <= len(body["title"]) <= 96
@@ -478,9 +535,30 @@ class MailEdgeClient:
                 raise MailEdgeContractError(
                     "MAIL_EDGE_PROBLEM_INVALID", http_status=502
                 )
-            certainty = body["deliveryCertainty"]
-            code = REMOTE_PROBLEM_CODES[remote_code]
-            retryable = body["retryable"] and certainty == "not_sent"
+            parsed_code, canonical_status = REMOTE_PROBLEM_POLICIES[remote_code]
+            if body["status"] != canonical_status:
+                raise MailEdgeContractError(
+                    "MAIL_EDGE_PROBLEM_INVALID", http_status=502
+                )
+            for field, maximum in (("detail", 256), ("instance", 256), ("traceId", 64)):
+                item = body.get(field)
+                if item is not None and (
+                    not isinstance(item, str) or not 1 <= len(item) <= maximum
+                ):
+                    raise MailEdgeContractError(
+                        "MAIL_EDGE_PROBLEM_INVALID", http_status=502
+                    )
+            if "occurredAt" in body:
+                parse_rfc3339(body["occurredAt"], "MAIL_EDGE_PROBLEM_INVALID")
+            parsed_certainty = body["deliveryCertainty"]
+            parsed_retryable = body["retryable"] and parsed_certainty == "not_sent"
+            parsed_safe_details = normalize_safe_details(
+                body.get("safeDetails"), strict=True
+            )
+            certainty = parsed_certainty
+            code = parsed_code
+            retryable = parsed_retryable
+            safe_details = parsed_safe_details
         except (
             ValueError,
             json.JSONDecodeError,
@@ -492,6 +570,7 @@ class MailEdgeClient:
             code=code,
             retryable=retryable,
             delivery_certainty=certainty,
+            safe_details=safe_details,
             http_status=response.status_code,
         )
 
@@ -714,7 +793,9 @@ class MailEdgeClient:
             raise MailEdgeContractError(
                 "RAW_DOWNLOAD_AUTHORIZATION_INVALID", http_status=403
             )
+        self._begin_operation()
         if not self._admission.acquire(blocking=False):
+            self._finish_operation()
             raise MailEdgeBackpressureError()
         response: Optional[requests.Response] = None
         try:
@@ -805,9 +886,12 @@ class MailEdgeClient:
             self._breaker.failure()
             raise MailEdgeContractError("RAW_DOWNLOAD_TARGET_INVALID") from None
         finally:
-            if response is not None:
-                response.close()
-            self._admission.release()
+            try:
+                if response is not None:
+                    response.close()
+            finally:
+                self._admission.release()
+                self._finish_operation()
 
     def issue_raw_access_grant(
         self,
@@ -1093,3 +1177,52 @@ class MailEdgeClient:
             return response.status_code == 200
         finally:
             self._close_response(response)
+
+    def close(self, timeout_seconds: Optional[float] = None) -> bool:
+        selected_timeout = (
+            self._configuration.http.shutdown_seconds
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+        if (
+            isinstance(selected_timeout, bool)
+            or not isinstance(selected_timeout, (int, float))
+            or not math.isfinite(selected_timeout)
+            or selected_timeout < 0
+        ):
+            raise ValueError("Mail Edge client shutdown timeout is invalid.")
+        deadline = time.monotonic() + float(selected_timeout)
+        with self._lifecycle:
+            if self._closed:
+                return self._close_succeeded
+            self._accepting_operations = False
+            while self._active_operations > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._lifecycle.wait(remaining)
+            if self._session_close_started:
+                while not self._closed:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False
+                    self._lifecycle.wait(remaining)
+                return self._close_succeeded
+            self._session_close_started = True
+        closed_cleanly = True
+        if self._owns_session:
+            try:
+                self._session.close()
+            except Exception:
+                closed_cleanly = False
+        with self._lifecycle:
+            self._closed = True
+            self._close_succeeded = closed_cleanly
+            self._lifecycle.notify_all()
+        return closed_cleanly
+
+    def __enter__(self) -> MailEdgeClient:
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()

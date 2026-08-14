@@ -1,3 +1,4 @@
+import copy
 import json
 
 import pytest
@@ -32,6 +33,26 @@ def _document(secret_directory):
             "maximumFutureSkewSeconds": 30,
             "verificationKeys": {"host-key-1": "secret://host-key-1"},
         },
+        "hostDelivery": {
+            "callbackConcurrency": 8,
+            "deliveryConcurrency": 2,
+            "maximumInFlightRawBytes": 52428800,
+            "maximumInFlightMemoryBytes": 268435456,
+            "maximumProcessRssBytes": 2147483648,
+            "minimumSpoolFreeBytes": 1048576,
+            "estimatedMemoryMultiplier": 4,
+            "estimatedMemoryFixedBytes": 8388608,
+            "spoolDirectory": str(secret_directory.parent),
+            "mime": {
+                "maximumParts": 256,
+                "maximumDepth": 16,
+                "maximumHeaderCount": 1024,
+                "maximumHeaderBytes": 1048576,
+                "maximumLineBytes": 1048576,
+                "maximumSemanticBytes": 104857600,
+                "parserSeconds": 10,
+            },
+        },
     }
 
 
@@ -50,6 +71,8 @@ def test_versioned_config_resolves_secret_references(tmp_path):
     assert config.host_authentication.verification_keys == {"host-key-1": b"h" * 32}
     assert config.http.maximum_json_bytes == 1024 * 1024
     assert config.host_authentication.maximum_request_bytes == 1024 * 1024
+    assert config.host_delivery.delivery_concurrency == 2
+    assert config.host_delivery.mime.maximum_parts == 256
 
 
 def test_operator_credentials_are_separate_scopes_and_cannot_be_reused(tmp_path):
@@ -124,3 +147,27 @@ def test_config_rejects_duplicate_keys_non_finite_numbers_and_oversized_input(
         path.write_bytes(document)
         with pytest.raises(MailEdgeConfigurationError):
             load_mail_edge_configuration(str(path))
+
+
+def test_host_resource_limits_must_be_internally_safe(tmp_path):
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    for name in ("tenant-bearer", "opaque-token", "host-key-1"):
+        (secrets / name).write_text("x" * 32)
+    valid = _document(secrets)
+    invalid_documents = []
+    for path, value in (
+        (("hostDelivery", "deliveryConcurrency"), 9),
+        (("hostDelivery", "estimatedMemoryMultiplier"), 3),
+        (("hostDelivery", "estimatedMemoryFixedBytes"), 1024),
+        (("hostDelivery", "maximumInFlightRawBytes"), 1024),
+        (("hostDelivery", "spoolDirectory"), "relative"),
+    ):
+        document = copy.deepcopy(valid)
+        document[path[0]][path[1]] = value
+        invalid_documents.append(document)
+    config_path = tmp_path / "mail-edge.json"
+    for document in invalid_documents:
+        config_path.write_text(json.dumps(document))
+        with pytest.raises(MailEdgeConfigurationError):
+            load_mail_edge_configuration(str(config_path))

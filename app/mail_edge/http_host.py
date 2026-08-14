@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-import tempfile
-import threading
 import time
 from datetime import datetime, timezone
 from typing import Callable, Mapping
@@ -25,12 +23,12 @@ from .contracts import (
     strict_json_loads,
 )
 from .errors import (
-    MailEdgeBackpressureError,
     MailEdgeContractError,
     MailEdgeError,
 )
 from .host_services import ApplicationDeliveryService
 from .problem import problem_status, project_problem
+from .resources import ResourceLease
 
 
 MAXIMUM_RAW_GRANT_LIFETIME_SECONDS = 5 * 60
@@ -109,7 +107,7 @@ def create_mail_edge_host_blueprint(
 ) -> Blueprint:
     blueprint = Blueprint("mail_edge_host", __name__)
     request_limit = bridge.configuration.host_authentication.maximum_request_bytes
-    admission = threading.BoundedSemaphore(bridge.configuration.http.concurrency)
+    admission = bridge.host_admission
 
     def authenticated_body(operation: str, subject_id: str, raw: bytes) -> None:
         bridge.authenticated_host_operations.verify_headers(
@@ -123,15 +121,14 @@ def create_mail_edge_host_blueprint(
     @blueprint.before_request
     def begin_observation() -> None:
         g.mail_edge_host_started = time.monotonic()
-        g.mail_edge_host_admitted = admission.acquire(blocking=False)
-        if not g.mail_edge_host_admitted:
-            raise MailEdgeBackpressureError()
+        g.mail_edge_host_admission = admission.acquire_callback()
 
     @blueprint.after_request
     def observe(response: Response) -> Response:
-        if getattr(g, "mail_edge_host_admitted", False):
-            admission.release()
-            g.mail_edge_host_admitted = False
+        lease = getattr(g, "mail_edge_host_admission", None)
+        if isinstance(lease, ResourceLease):
+            lease.release()
+            g.mail_edge_host_admission = None
         started = getattr(g, "mail_edge_host_started", None)
         duration_ms = (
             max(0, int((time.monotonic() - started) * 1000))
@@ -145,6 +142,15 @@ def create_mail_edge_host_blueprint(
             duration_ms,
         )
         return response
+
+    @blueprint.teardown_request
+    def release_callback_admission(_error: object) -> None:
+        """Release admission if normal after-request processing was interrupted."""
+
+        lease = getattr(g, "mail_edge_host_admission", None)
+        if isinstance(lease, ResourceLease):
+            lease.release()
+            g.mail_edge_host_admission = None
 
     @blueprint.errorhandler(MailEdgeError)
     def handle_mail_edge_error(error: MailEdgeError):
@@ -170,10 +176,14 @@ def create_mail_edge_host_blueprint(
             request.endpoint or "unknown",
             type(error).__name__,
         )
+        business_effect_possible = request.endpoint in {
+            "mail_edge_host.delivery",
+            "mail_edge_host.feedback",
+        }
         internal = MailEdgeError(
             code="INTERNAL",
             retryable=False,
-            delivery_certainty="not_sent",
+            delivery_certainty=("unknown" if business_effect_possible else "not_sent"),
             http_status=500,
         )
         problem = project_problem(
@@ -230,19 +240,15 @@ def create_mail_edge_host_blueprint(
             expected_audience=bridge.configuration.host_authentication.audience,
             now=clock(),
         )
-        claim = delivery_service.claim(callback.delivery, raw)
-        if claim.completed_acknowledgement is not None:
-            return _response(claim.completed_acknowledgement, subject_id)
-        spool_limit = min(1024 * 1024, bridge.configuration.maximum_raw_bytes)
-        with tempfile.SpooledTemporaryFile(max_size=spool_limit, mode="w+b") as spool:
-            bridge.client.download_raw_to(grant, spool)
-            spool.seek(0)
-            raw_message = spool.read(bridge.configuration.maximum_raw_bytes + 1)
-        if len(raw_message) > bridge.configuration.maximum_raw_bytes:
-            raise MailEdgeContractError("RAW_MESSAGE_SIZE_INVALID", http_status=413)
-        acknowledgement = delivery_service.deliver_claimed(
-            callback.delivery, raw_message, claim
-        )
+        with admission.acquire_delivery(callback.delivery.raw.size):
+            claim = delivery_service.claim(callback.delivery, raw)
+            if claim.completed_acknowledgement is not None:
+                return _response(claim.completed_acknowledgement, subject_id)
+            with admission.open_raw_message() as raw_message:
+                bridge.client.download_raw_to(grant, raw_message)
+                acknowledgement = delivery_service.deliver_claimed(
+                    callback.delivery, raw_message, claim
+                )
         return _response(acknowledgement, subject_id)
 
     @blueprint.route("/mail-edge/feedback", methods=["POST"])

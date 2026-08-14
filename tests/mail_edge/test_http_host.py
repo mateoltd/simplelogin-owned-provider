@@ -2,6 +2,8 @@ import base64
 import hashlib
 import hmac
 import json
+import io
+import tempfile
 import threading
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -11,8 +13,10 @@ from flask import Flask
 
 from app.mail_edge.configuration import (
     HostAuthentication,
+    HostDeliveryLimits,
     HttpLimits,
     MailEdgeConfiguration,
+    MimeParserLimits,
 )
 from app.mail_edge.contracts import canonical_json
 from app.mail_edge.errors import MailEdgeAuthenticationError
@@ -21,6 +25,8 @@ from app.mail_edge.host_services import (
     AuthenticatedHostOperations,
 )
 from app.mail_edge.http_host import create_mail_edge_host_blueprint
+from app.mail_edge.mime import BoundedMimeParserService
+from app.mail_edge.resources import HostResourceAdmissionService
 from app.mail_edge.routing import AliasRoute, ReverseRoute
 from app.mail_edge.security import HOST_SIGNATURE_HEADERS, HostSignature, _signing_input
 
@@ -130,6 +136,18 @@ def configuration():
         host_authentication=HostAuthentication(
             "simplelogin-host", 300, 30, {"host-key": KEY}
         ),
+        host_delivery=HostDeliveryLimits(
+            2,
+            1,
+            2 * 1024 * 1024,
+            16 * 1024 * 1024,
+            64 * 1024 * 1024 * 1024,
+            0,
+            4,
+            1024 * 1024,
+            tempfile.gettempdir(),
+            MimeParserLimits(64, 8, 256, 256 * 1024, 256 * 1024, 4 * 1024 * 1024, 5),
+        ),
     )
 
 
@@ -166,7 +184,8 @@ def callback_app(
 ):
     selected = configuration()
     selected = replace(
-        selected, http=replace(selected.http, concurrency=concurrency)
+        selected,
+        host_delivery=replace(selected.host_delivery, callback_concurrency=concurrency),
     )
     raw_client = RawClient(raw_message)
     callbacks = Callbacks()
@@ -179,15 +198,32 @@ def callback_app(
         reverse_route_resolver=ReverseResolver(),
         feedback_service=Feedback(),
         client=raw_client,
+        host_admission=HostResourceAdmissionService(
+            selected.host_delivery, selected.maximum_raw_bytes
+        ),
     )
     deliveries = []
+
+    def deliver(envelope, message):
+        copied = io.BytesIO()
+        envelope.original_content.copy_to(copied)
+        deliveries.append(
+            (
+                envelope,
+                message,
+                copied.getvalue(),
+                envelope.original_content.is_file_backed,
+            )
+        )
+        return "250 accepted"
+
     delivery_service = ApplicationDeliveryService(
         TENANT_ID,
         callbacks,
         Bindings(),
         Destinations(),
-        lambda envelope, message: deliveries.append((envelope, message))
-        or "250 accepted",
+        deliver,
+        BoundedMimeParserService(selected.host_delivery.mime),
         clock=lambda: NOW,
     )
     app = Flask(__name__)
@@ -351,7 +387,8 @@ def test_delivery_streams_granted_raw_once_and_reuses_durable_ack():
     assert first.json["deliveryId"] == DELIVERY_ID
     assert raw_client.downloads == 1
     assert len(deliveries) == 1
-    assert deliveries[0][0].original_content == raw_message
+    assert deliveries[0][3]
+    assert deliveries[0][2] == raw_message
 
 
 def test_reverse_and_feedback_callbacks_use_contract_subjects():
@@ -496,3 +533,82 @@ def test_callback_admission_backpressures_and_releases_capacity():
         "admission_nonce_03",
     )
     assert recovered.status_code == 200
+
+
+def test_delivery_resource_admission_rejects_concurrent_raw_download():
+    raw_message = b"From: sender@example.net\r\nTo: alias@example.com\r\n\r\nbody"
+    app, raw_client, _ = callback_app(raw_message, concurrency=2)
+    entered = threading.Event()
+    release = threading.Event()
+    download = raw_client.download_raw_to
+
+    def blocking_download(grant, target):
+        entered.set()
+        assert release.wait(timeout=2)
+        download(grant, target)
+
+    raw_client.download_raw_to = blocking_download
+    value = delivery_callback(raw_message)
+    first_response = []
+    first = threading.Thread(
+        target=lambda: first_response.append(
+            post_signed(
+                app.test_client(),
+                "/mail-edge/delivery",
+                value,
+                "application_delivery",
+                DELIVERY_ID,
+                "delivery_resource_nonce_01",
+            )
+        )
+    )
+    first.start()
+    assert entered.wait(timeout=2)
+    rejected = post_signed(
+        app.test_client(),
+        "/mail-edge/delivery",
+        value,
+        "application_delivery",
+        DELIVERY_ID,
+        "delivery_resource_nonce_02",
+    )
+    assert rejected.status_code == 429
+    assert rejected.json["code"] == "rate-limited"
+    assert rejected.json["deliveryCertainty"] == "not_sent"
+    release.set()
+    first.join(timeout=2)
+    assert first_response[0].status_code == 200
+    assert raw_client.downloads == 1
+
+
+def test_delivery_route_rejects_part_bomb_and_malformed_mime_before_handler():
+    boundary = b"mail-edge-part-bomb"
+    part_bomb = (
+        b"Content-Type: multipart/mixed; boundary=mail-edge-part-bomb\r\n\r\n"
+        + b"".join(
+            b"--" + boundary + b"\r\nContent-Type: text/plain\r\n\r\npart\r\n"
+            for _ in range(65)
+        )
+        + b"--"
+        + boundary
+        + b"--\r\n"
+    )
+    malformed = (
+        b"Content-Type: multipart/mixed; boundary=never-closed\r\n\r\n"
+        b"--never-closed\r\nContent-Type: text/plain\r\n\r\nbody"
+    )
+    for index, raw_message in enumerate((part_bomb, malformed), start=1):
+        app, raw_client, deliveries = callback_app(raw_message)
+        response = post_signed(
+            app.test_client(),
+            "/mail-edge/delivery",
+            delivery_callback(raw_message),
+            "application_delivery",
+            DELIVERY_ID,
+            f"hostile_mime_nonce_{index:02d}",
+        )
+        assert response.status_code == 400
+        assert response.json["code"] == "validation-failed"
+        assert response.json["deliveryCertainty"] == "not_sent"
+        assert raw_client.downloads == 1
+        assert deliveries == []
