@@ -4196,3 +4196,130 @@ class UserAuditLog(Base, ModelMixin):
         sa.Index("ix_user_audit_log_user_email", "user_email"),
         sa.Index("ix_user_audit_log_created_at", "created_at"),
     )
+
+
+class MailEdgeReplayNonce(Base, ModelMixin):
+    __tablename__ = "mail_edge_replay_nonce"
+
+    key_id = sa.Column(sa.String(128), nullable=False)
+    nonce_digest = sa.Column(sa.String(64), nullable=False)
+    expires_at = sa.Column(ArrowType, nullable=False, index=True)
+
+    __table_args__ = (
+        sa.UniqueConstraint("key_id", "nonce_digest", name="uq_mail_edge_replay_nonce"),
+    )
+
+
+class MailEdgeCallbackReceipt(Base, ModelMixin):
+    __tablename__ = "mail_edge_callback_receipt"
+
+    tenant_id = sa.Column(sa.String(36), nullable=False)
+    operation = sa.Column(sa.String(32), nullable=False)
+    subject_id = sa.Column(sa.String(128), nullable=False)
+    body_sha256 = sa.Column(sa.String(64), nullable=False)
+    status = sa.Column(
+        sa.String(16), nullable=False, default="processing", server_default="processing"
+    )
+    acknowledgement = sa.Column(sa.JSON, nullable=True)
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "tenant_id", "operation", "subject_id", name="uq_mail_edge_callback_receipt"
+        ),
+        sa.CheckConstraint(
+            "status IN ('processing', 'completed')",
+            name="ck_mail_edge_callback_receipt_status",
+        ),
+        sa.Index("ix_mail_edge_callback_tenant_operation", "tenant_id", "operation"),
+    )
+
+
+class MailEdgeOutboundProjection(Base, ModelMixin):
+    __tablename__ = "mail_edge_outbound_projection"
+
+    tenant_id = sa.Column(sa.String(36), nullable=False)
+    intent_id = sa.Column(sa.String(36), nullable=False)
+    user_id = sa.Column(sa.ForeignKey(User.id, ondelete="cascade"), nullable=False)
+    alias_id = sa.Column(sa.ForeignKey(Alias.id, ondelete="cascade"), nullable=False)
+    contact_id = sa.Column(
+        sa.ForeignKey(Contact.id, ondelete="SET NULL"), nullable=True
+    )
+    mailbox_id = sa.Column(
+        sa.ForeignKey(Mailbox.id, ondelete="SET NULL"), nullable=True
+    )
+    email_log_id = sa.Column(
+        sa.ForeignKey(EmailLog.id, ondelete="SET NULL"), nullable=True
+    )
+    state = sa.Column(sa.String(32), nullable=False)
+    request_fingerprint = sa.Column(sa.String(64), nullable=False)
+    version = sa.Column(sa.BigInteger, nullable=False, default=0, server_default="0")
+    feedback_kind = sa.Column(sa.String(32), nullable=True)
+    quarantined = sa.Column(
+        sa.Boolean, nullable=False, default=False, server_default="0"
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "tenant_id", "intent_id", name="uq_mail_edge_outbound_intent"
+        ),
+        sa.Index("ix_mail_edge_outbound_user_id_id", "user_id", "id"),
+        sa.Index("ix_mail_edge_outbound_alias_id_id", "alias_id", "id"),
+        sa.CheckConstraint(
+            "state IN ('accepted', 'ready', 'dispatching', 'retry_wait', "
+            "'provider_accepted', 'failed_not_sent', 'quarantined_unknown', "
+            "'canceled')",
+            name="ck_mail_edge_outbound_projection_state",
+        ),
+        sa.CheckConstraint(
+            "version >= 0", name="ck_mail_edge_outbound_projection_version"
+        ),
+    )
+
+
+class MailEdgeRouteBindingProjection(Base, ModelMixin):
+    __tablename__ = "mail_edge_route_binding_projection"
+
+    tenant_id = sa.Column(sa.String(36), nullable=False)
+    domain_a_label = sa.Column(sa.String(253), nullable=False)
+    direction = sa.Column(sa.String(8), nullable=False)
+    binding_id = sa.Column(sa.String(36), nullable=False)
+    binding_version = sa.Column(sa.BigInteger, nullable=False)
+    state = sa.Column(sa.String(16), nullable=False)
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "tenant_id",
+            "domain_a_label",
+            "direction",
+            "binding_id",
+            "binding_version",
+            name="uq_mail_edge_route_binding_generation",
+        ),
+        sa.Index(
+            "ix_mail_edge_route_binding_active_lookup",
+            "tenant_id",
+            "domain_a_label",
+            "direction",
+            "state",
+            "binding_version",
+        ),
+        sa.Index(
+            "uq_mail_edge_route_binding_one_active",
+            "tenant_id",
+            "domain_a_label",
+            "direction",
+            unique=True,
+            postgresql_where=sa.text("state = 'active'"),
+        ),
+        sa.CheckConstraint(
+            "direction IN ('inbound', 'outbound')",
+            name="ck_mail_edge_route_binding_direction",
+        ),
+        sa.CheckConstraint(
+            "state IN ('active', 'draining', 'retired')",
+            name="ck_mail_edge_route_binding_state",
+        ),
+        sa.CheckConstraint(
+            "binding_version > 0", name="ck_mail_edge_route_binding_version"
+        ),
+    )

@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from functools import wraps
 from smtplib import SMTP, SMTPException
-from typing import Optional, Dict, List, Callable
+from typing import Optional, Dict, List, Callable, Protocol
 
 import newrelic.agent
 import sentry_sdk
@@ -35,6 +35,8 @@ class SendRequest:
     is_forward: bool = False
     ignore_smtp_errors: bool = False
     retries: int = 0
+    use_mail_edge: bool = False
+    mail_edge_context: Optional[Dict] = None
 
     def to_bytes(self) -> bytes:
         if not config.SAVE_UNSENT_DIR:
@@ -49,6 +51,8 @@ class SendRequest:
             "rcpt_options": self.rcpt_options,
             "is_forward": self.is_forward,
             "retries": self.retries,
+            "use_mail_edge": self.use_mail_edge,
+            "mail_edge_context": self.mail_edge_context,
         }
         return json.dumps(data).encode("utf-8")
 
@@ -70,6 +74,8 @@ class SendRequest:
             rcpt_options=decoded_data["rcpt_options"],
             is_forward=decoded_data["is_forward"],
             retries=decoded_data.get("retries", 1),
+            use_mail_edge=decoded_data.get("use_mail_edge", False),
+            mail_edge_context=decoded_data.get("mail_edge_context"),
         )
 
     def save_request_to_unsent_dir(self, prefix: str = "DeliveryFail"):
@@ -96,12 +102,23 @@ class SendRequest:
         LOG.i(f"Saved unsent message {file_path}")
 
 
+class OutboundMailTransport(Protocol):
+    def send(self, send_request: SendRequest) -> bool:
+        ...
+
+
 class MailSender:
     def __init__(self):
         self._pool: Optional[ThreadPoolExecutor] = None
         self._store_emails = False
         self._randomize_smtp_hosts = True
         self._emails_sent: List[SendRequest] = []
+        self._mail_edge_transport: Optional[OutboundMailTransport] = None
+
+    def set_mail_edge_transport(
+        self, transport: Optional[OutboundMailTransport]
+    ) -> None:
+        self._mail_edge_transport = transport
 
     def store_emails_instead_of_sending(self, store_emails: bool = True):
         self._store_emails = store_emails
@@ -139,6 +156,8 @@ class MailSender:
                 send_request.msg[headers.TO],
             )
             return True
+        if send_request.use_mail_edge and self._mail_edge_transport is not None:
+            return self._mail_edge_transport.send(send_request)
         if not self._pool:
             return self._send_to_smtp(send_request, retries)
         else:
@@ -308,6 +327,8 @@ def sl_sendmail(
     is_forward: bool = False,
     retries=2,
     ignore_smtp_error=False,
+    use_mail_edge: bool = False,
+    mail_edge_context: Optional[Dict] = None,
 ):
     send_request = SendRequest(
         envelope_from,
@@ -317,5 +338,8 @@ def sl_sendmail(
         rcpt_options,
         is_forward,
         ignore_smtp_error,
+        0,
+        use_mail_edge,
+        mail_edge_context,
     )
-    mail_sender.send(send_request, retries)
+    return mail_sender.send(send_request, retries)
