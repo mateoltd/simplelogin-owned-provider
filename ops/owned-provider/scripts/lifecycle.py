@@ -70,7 +70,9 @@ def verify_domain(domain_name: str, report_path: str) -> dict:
     user = User.get_by(email=os.environ["ADMIN_EMAIL"])
     domain = CustomDomain.get_by(domain=domain_name)
     if domain is None or domain.user_id != user.id:
-        raise RuntimeError(f"configured custom domain is missing or not owned: {domain_name}")
+        raise RuntimeError(
+            f"configured custom domain is missing or not owned: {domain_name}"
+        )
     key = operation_key("domain-verify", domain_name + report["outbound_ip"])
     replayed = was_recorded(key) and all(
         (
@@ -96,7 +98,9 @@ def verify_domain(domain_name: str, report_path: str) -> dict:
 
 def status() -> dict:
     user = User.get_by(email=os.environ["ADMIN_EMAIL"])
-    domains = CustomDomain.filter_by(user_id=user.id).order_by(CustomDomain.domain).all()
+    domains = (
+        CustomDomain.filter_by(user_id=user.id).order_by(CustomDomain.domain).all()
+    )
     mailboxes = Mailbox.filter_by(user_id=user.id).order_by(Mailbox.email).all()
     return {
         "domains": [

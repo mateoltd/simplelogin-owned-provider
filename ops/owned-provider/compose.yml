@@ -61,6 +61,7 @@ x-app: &app
     ABUSER_HKDF_SALT_FILE: /run/secrets/abuser_hkdf_salt
     OWNED_PROVIDER_TEST_MODE: ${OWNED_PROVIDER_TEST_MODE:-}
     OWNED_PROVIDER_JOB_STALE_SECONDS: ${OWNED_PROVIDER_JOB_STALE_SECONDS:-2100}
+    MAIL_EDGE_CONFIG_PATH: ${OWNED_PROVIDER_MAIL_EDGE_CONFIG_PATH:-}
     HOME: /tmp
     PYTHONPATH: /code
   secrets: &app_secrets
@@ -74,9 +75,19 @@ x-app: &app
     - mac_key_hex
     - abuser_hkdf_salt
     - dkim_private_key
+    - mail_edge_tenant_bearer
+    - mail_edge_opaque_token_key
+    - mail_edge_host_key_current
+    - mail_edge_host_key_previous
+    - mail_edge_operator_bearer
+    - mail_edge_privileged_operator_bearer
+  configs: &app_configs
+    - source: mail_edge_host_config
+      target: /run/mail-edge/config.json
   volumes: &app_volumes
     - uploads:/code/static/upload
     - unsent:/code/var/unsent
+    - mail-edge-spool:/code/var/mail-edge-spool
   depends_on: &app_dependencies
     postgres:
       condition: service_healthy
@@ -85,6 +96,7 @@ x-app: &app
   pids_limit: 512
   mem_limit: 1536m
   cpus: 2.0
+  stop_grace_period: 45s
   ulimits:
     nofile:
       soft: 8192
@@ -213,11 +225,18 @@ services:
       - abuser_hkdf_salt
       - admin_password
       - dkim_private_key
+      - mail_edge_tenant_bearer
+      - mail_edge_opaque_token_key
+      - mail_edge_host_key_current
+      - mail_edge_host_key_previous
+      - mail_edge_operator_bearer
+      - mail_edge_privileged_operator_bearer
     command: ["python", "ops/owned-provider/scripts/bootstrap.py"]
 
   app:
     <<: *app
     restart: unless-stopped
+    mem_limit: ${OWNED_PROVIDER_APP_MEMORY_LIMIT:-1536m}
     command:
       - python
       - ops/owned-provider/scripts/log_wrapper.py
@@ -231,7 +250,7 @@ services:
       - --workers
       - ${OWNED_PROVIDER_GUNICORN_WORKERS:-2}
       - --timeout
-      - "30"
+      - ${OWNED_PROVIDER_GUNICORN_TIMEOUT_SECONDS:-90}
       - --max-requests
       - "1000"
       - --max-requests-jitter
@@ -298,6 +317,12 @@ services:
       - abuser_hkdf_salt
       - admin_password
       - dkim_private_key
+      - mail_edge_tenant_bearer
+      - mail_edge_opaque_token_key
+      - mail_edge_host_key_current
+      - mail_edge_host_key_previous
+      - mail_edge_operator_bearer
+      - mail_edge_privileged_operator_bearer
     command: ["python", "ops/owned-provider/scripts/e2e.py"]
     depends_on:
       app:
@@ -345,6 +370,12 @@ services:
       - abuser_hkdf_salt
       - admin_password
       - dkim_private_key
+      - mail_edge_tenant_bearer
+      - mail_edge_opaque_token_key
+      - mail_edge_host_key_current
+      - mail_edge_host_key_previous
+      - mail_edge_operator_bearer
+      - mail_edge_privileged_operator_bearer
     command: ["python", "ops/owned-provider/scripts/log_wrapper.py", "--service", "synthetic", "--", "python", "ops/owned-provider/scripts/synthetic_probe.py", "--loop-seconds", "${OWNED_PROVIDER_SYNTHETIC_INTERVAL_SECONDS:-300}"]
     depends_on:
       app:
@@ -375,6 +406,22 @@ secrets:
     file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/admin_password
   dkim_private_key:
     file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/dkim_private_key
+  mail_edge_tenant_bearer:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_tenant_bearer
+  mail_edge_opaque_token_key:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_opaque_token_key
+  mail_edge_host_key_current:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_host_key_current
+  mail_edge_host_key_previous:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_host_key_previous
+  mail_edge_operator_bearer:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_operator_bearer
+  mail_edge_privileged_operator_bearer:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_privileged_operator_bearer
+
+configs:
+  mail_edge_host_config:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR:?run owned-provider init}/mail-edge.json
 
 volumes:
   postgres:
@@ -385,5 +432,7 @@ volumes:
     name: simplelogin-owned-provider_uploads
   unsent:
     name: simplelogin-owned-provider_unsent
+  mail-edge-spool:
+    name: simplelogin-owned-provider_mail-edge-spool
   mailpit:
     name: simplelogin-owned-provider_mailpit

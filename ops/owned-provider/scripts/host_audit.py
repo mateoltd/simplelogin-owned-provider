@@ -28,10 +28,30 @@ def main():
     changed = command(
         "git", "-C", str(repository), "diff", "--name-only", expected, "--"
     ).splitlines()
+    exact_host_paths = {
+        ".gitignore",
+        "app/db.py",
+        "app/email_utils.py",
+        "app/mail_sender.py",
+        "app/models.py",
+        "docs/mail-edge-bridge.md",
+        "email_handler.py",
+        "simplelogin_app.py",
+        "tests/conftest.py",
+        "tests/test_email_utils.py",
+    }
+    allowed_prefixes = (
+        "app/mail_edge/",
+        "migrations/versions/2026_0814",
+        "ops/owned-provider/",
+        "tests/mail_edge/",
+        "tests/mail_edge_integration/",
+    )
     unexpected = [
         path
         for path in changed
-        if path != ".gitignore" and not path.startswith("ops/owned-provider/")
+        if path not in exact_host_paths
+        and not any(path.startswith(prefix) for prefix in allowed_prefixes)
     ]
     if unexpected:
         raise RuntimeError(f"local changes escaped the operations layer: {unexpected}")
@@ -64,6 +84,7 @@ def main():
         raise RuntimeError(f"secret values leaked into Docker metadata: {leaked}")
 
     hardened = {}
+    mail_edge_mounts = {}
     loopback_ports = True
     for container in inspected:
         service = container["Config"]["Labels"].get("com.docker.compose.service")
@@ -90,11 +111,43 @@ def main():
                 raise RuntimeError(
                     f"service {service} is not running hardened: {values}"
                 )
-    missing_hardened = {"app", "email", "job-runner", "observer", "synthetic"} - hardened.keys()
+            destinations = {mount["Destination"] for mount in container["Mounts"]}
+            mail_edge_mounts[service] = {
+                "config": "/run/mail-edge/config.json" in destinations,
+                "spool": "/code/var/mail-edge-spool" in destinations,
+            }
+            if not all(mail_edge_mounts[service].values()):
+                raise RuntimeError(
+                    f"service {service} lacks Mail Edge mounts: {mail_edge_mounts[service]}"
+                )
+    missing_hardened = {
+        "app",
+        "email",
+        "job-runner",
+        "observer",
+        "synthetic",
+    } - hardened.keys()
     if missing_hardened:
         raise RuntimeError(f"hardened services not running: {sorted(missing_hardened)}")
     if not loopback_ports:
         raise RuntimeError("a published port is not bound to loopback")
+
+    leaked_logs = []
+    for container_id in container_ids:
+        completed = subprocess.run(
+            ["docker", "logs", "--tail", "2000", container_id],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        encoded_logs = completed.stdout + completed.stderr
+        for name, value in secrets.items():
+            if value and value in encoded_logs:
+                leaked_logs.append(name)
+    if leaked_logs:
+        raise RuntimeError(
+            f"secret values leaked into service logs: {sorted(set(leaked_logs))}"
+        )
 
     app_id = next(
         item["Id"]
@@ -119,11 +172,13 @@ def main():
         json.dumps(
             {
                 "upstream_commit": expected,
-                "operations_only_diff": True,
+                "owned_provider_and_mail_edge_diff_allowlisted": True,
                 "secret_files_mode": "0600",
                 "secrets_absent_from_docker_metadata": True,
                 "loopback_only_ports": loopback_ports,
                 "hardened_services": hardened,
+                "mail_edge_mounts": mail_edge_mounts,
+                "secrets_absent_from_recent_logs": True,
                 "image_revision": revision,
             },
             sort_keys=True,

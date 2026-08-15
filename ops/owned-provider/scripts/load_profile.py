@@ -24,7 +24,9 @@ def api(base, method, path, body=None, api_key=None):
         headers["Content-Type"] = "application/json"
     if api_key:
         headers["Authentication"] = api_key
-    request = urllib.request.Request(base + path, data=data, headers=headers, method=method)
+    request = urllib.request.Request(
+        base + path, data=data, headers=headers, method=method
+    )
     started = time.perf_counter()
     with urllib.request.urlopen(request, timeout=30) as response:
         payload = json.loads(response.read(2_000_000))
@@ -36,9 +38,9 @@ def seed(count: int) -> tuple[int, float]:
     user = User.get_by(email=os.environ["ADMIN_EMAIL"])
     domain = CustomDomain.get_by(domain=os.environ["OWNED_PROVIDER_E2E_DOMAIN"])
     prefix = "capacity-"
-    Session.query(Alias).filter(
-        Alias.email.like(f"{prefix}%@{domain.domain}")
-    ).delete(synchronize_session=False)
+    Session.query(Alias).filter(Alias.email.like(f"{prefix}%@{domain.domain}")).delete(
+        synchronize_session=False
+    )
     Session.commit()
     existing = 0
     started = time.perf_counter()
@@ -65,7 +67,11 @@ def seed(count: int) -> tuple[int, float]:
             Session.execute(Alias.__table__.insert(), rows)
             Session.commit()
     duration = time.perf_counter() - started
-    total = Session.query(Alias).filter(Alias.email.like(f"{prefix}%@{domain.domain}")).count()
+    total = (
+        Session.query(Alias)
+        .filter(Alias.email.like(f"{prefix}%@{domain.domain}"))
+        .count()
+    )
     return total, duration
 
 
@@ -75,17 +81,27 @@ def main():
     parser.add_argument("--requests", type=int, default=20)
     args = parser.parse_args()
     if args.count < 10_000:
-        raise RuntimeError("the production capacity profile requires at least 10,000 aliases")
+        raise RuntimeError(
+            "the production capacity profile requires at least 10,000 aliases"
+        )
     with create_light_app().app_context():
         total, seed_seconds = seed(args.count)
     base = os.environ["OWNED_PROVIDER_BASE_URL"].rstrip("/")
-    redis.Redis.from_url(os.environ["MEM_STORE_URI"]).flushdb()
+    redis_client = redis.Redis.from_url(os.environ["MEM_STORE_URI"])
+    try:
+        redis_client.flushdb()
+    finally:
+        redis_client.close()
     password = Path(os.environ["ADMIN_PASSWORD_FILE"]).read_text().strip()
     _, login, _ = api(
         base,
         "POST",
         "/api/auth/login",
-        {"email": os.environ["ADMIN_EMAIL"], "password": password, "device": "capacity"},
+        {
+            "email": os.environ["ADMIN_EMAIL"],
+            "password": password,
+            "device": "capacity",
+        },
     )
     api_key = login["api_key"]
     list_latencies = []
@@ -115,11 +131,17 @@ def main():
         "capacity_aliases": total,
         "total_aliases": None,
         "seed_seconds": round(seed_seconds, 3),
-        "seed_aliases_per_second": round(max(0, args.count) / max(seed_seconds, 0.001), 1),
+        "seed_aliases_per_second": round(
+            max(0, args.count) / max(seed_seconds, 0.001), 1
+        ),
         "list_ms_p50": round(statistics.median(list_latencies), 3),
-        "list_ms_p95": round(sorted(list_latencies)[int(len(list_latencies) * 0.95) - 1], 3),
+        "list_ms_p95": round(
+            sorted(list_latencies)[int(len(list_latencies) * 0.95) - 1], 3
+        ),
         "search_ms_p50": round(statistics.median(search_latencies), 3),
-        "search_ms_p95": round(sorted(search_latencies)[int(len(search_latencies) * 0.95) - 1], 3),
+        "search_ms_p95": round(
+            sorted(search_latencies)[int(len(search_latencies) * 0.95) - 1], 3
+        ),
         "http_requests_per_operation": args.requests,
     }
     with create_light_app().app_context():

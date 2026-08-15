@@ -44,7 +44,11 @@ def spf_authorizes(
     if domain in visited or len(visited) >= 10:
         return False, ["SPF include/redirect recursion or lookup limit reached"]
     visited.add(domain)
-    records = [value for value in txt_values(resolver, domain) if value.lower().startswith("v=spf1 ")]
+    records = [
+        value
+        for value in txt_values(resolver, domain)
+        if value.lower().startswith("v=spf1 ")
+    ]
     if len(records) != 1:
         return False, [f"expected one SPF record at {domain}, found {len(records)}"]
     warnings = []
@@ -62,7 +66,9 @@ def spf_authorizes(
             matched = True
         elif term.startswith("ip4:") or term.startswith("ip6:"):
             try:
-                matched = address in ipaddress.ip_network(term.split(":", 1)[1], strict=False)
+                matched = address in ipaddress.ip_network(
+                    term.split(":", 1)[1], strict=False
+                )
             except ValueError:
                 warnings.append(f"invalid SPF network: {term}")
         elif term == "a" or term.startswith("a:"):
@@ -72,7 +78,9 @@ def spf_authorizes(
             host = term.split(":", 1)[1] if ":" in term else domain
             try:
                 mx_hosts = [str(item.exchange) for item in resolver.resolve(host, "MX")]
-                matched = any(str(address) in resolve_addresses(resolver, mx) for mx in mx_hosts)
+                matched = any(
+                    str(address) in resolve_addresses(resolver, mx) for mx in mx_hosts
+                )
             except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
                 matched = False
         elif term.startswith("include:"):
@@ -148,9 +156,13 @@ def check(args) -> dict:
                     serialization.PublicFormat.PKCS1,
                 )
             ).decode()
-            observed["dkim_key_matches"] = tags.get("p", "").replace(" ", "") == expected_key
+            observed["dkim_key_matches"] = (
+                tags.get("p", "").replace(" ", "") == expected_key
+            )
             if not observed["dkim_key_matches"]:
-                failures.append("published DKIM key does not match the configured private key")
+                failures.append(
+                    "published DKIM key does not match the configured private key"
+                )
     except (dns.exception.DNSException, ValueError, TypeError) as error:
         failures.append(f"DKIM check failed: {type(error).__name__}: {error}")
 
@@ -179,13 +191,19 @@ def check(args) -> dict:
     try:
         ptr_names = sorted(
             fqdn(str(item))
-            for item in resolver.resolve(dns.reversename.from_address(args.outbound_ip), "PTR")
+            for item in resolver.resolve(
+                dns.reversename.from_address(args.outbound_ip), "PTR"
+            )
         )
         observed["ptr"] = ptr_names
         if not ptr_names:
             failures.append("outbound address has no PTR")
-        elif not any(args.outbound_ip in resolve_addresses(resolver, name) for name in ptr_names):
-            failures.append("PTR forward-confirmation does not return the outbound address")
+        elif not any(
+            args.outbound_ip in resolve_addresses(resolver, name) for name in ptr_names
+        ):
+            failures.append(
+                "PTR forward-confirmation does not return the outbound address"
+            )
         if args.ptr_host and fqdn(args.ptr_host) not in ptr_names:
             failures.append(f"PTR does not contain expected host {fqdn(args.ptr_host)}")
     except dns.exception.DNSException as error:
@@ -209,7 +227,11 @@ def main() -> int:
     parser.add_argument("--outbound-ip", required=True)
     parser.add_argument("--ptr-host")
     parser.add_argument("--dkim-selector", default="dkim")
-    parser.add_argument("--dkim-private-key", default=os.environ.get("DKIM_PRIVATE_KEY_PATH"), required=False)
+    parser.add_argument(
+        "--dkim-private-key",
+        default=os.environ.get("DKIM_PRIVATE_KEY_PATH"),
+        required=False,
+    )
     parser.add_argument("--nameserver", action="append")
     parser.add_argument("--timeout", type=float, default=5.0)
     args = parser.parse_args()

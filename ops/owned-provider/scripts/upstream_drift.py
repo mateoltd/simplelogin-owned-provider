@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 
-ROUTE = re.compile(r'@\w+_bp\.route\(([^\n]+)')
+ROUTE = re.compile(r"@\w+_bp\.route\(([^\n]+)")
 ENV_CALL = re.compile(r'(?:getenv|environ\.get)\(["\']([A-Z][A-Z0-9_]+)')
 ENV_INDEX = re.compile(r'environ\[["\']([A-Z][A-Z0-9_]+)')
 
@@ -66,7 +66,9 @@ def report(repository: Path, candidate: str) -> dict:
     ).stdout
     pin = (repository / "ops/owned-provider/UPSTREAM_COMMIT").read_text().strip()
     head = git(repository, "rev-parse", "HEAD").stdout.strip()
-    candidate_sha = git(repository, "rev-parse", f"{candidate}^{{commit}}").stdout.strip()
+    candidate_sha = git(
+        repository, "rev-parse", f"{candidate}^{{commit}}"
+    ).stdout.strip()
     upstream_paths = lines(repository, "diff", "--name-only", pin, candidate_sha)
     overlay_paths = lines(repository, "diff", "--name-only", pin, head)
     replay = git(
@@ -86,10 +88,18 @@ def report(repository: Path, candidate: str) -> dict:
     compatibility = {
         "api_routes_added": sorted(set(future["routes"]) - set(baseline["routes"])),
         "api_routes_removed": sorted(set(baseline["routes"]) - set(future["routes"])),
-        "config_added": sorted(set(future["environment"]) - set(baseline["environment"])),
-        "config_removed": sorted(set(baseline["environment"]) - set(future["environment"])),
-        "migrations_added": sorted(set(future["migrations"]) - set(baseline["migrations"])),
-        "migrations_removed": sorted(set(baseline["migrations"]) - set(future["migrations"])),
+        "config_added": sorted(
+            set(future["environment"]) - set(baseline["environment"])
+        ),
+        "config_removed": sorted(
+            set(baseline["environment"]) - set(future["environment"])
+        ),
+        "migrations_added": sorted(
+            set(future["migrations"]) - set(baseline["migrations"])
+        ),
+        "migrations_removed": sorted(
+            set(baseline["migrations"]) - set(future["migrations"])
+        ),
         "dockerfile_changed": "Dockerfile" in upstream_paths,
         "mail_handler_changed": "email_handler.py" in upstream_paths,
     }

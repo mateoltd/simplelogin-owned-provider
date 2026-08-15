@@ -57,3 +57,24 @@ groups:
           severity: warning
         annotations:
           summary: Provider volume filesystem has less than 10 GiB available
+      - alert: OwnedProviderMailEdgeSpoolLow
+        expr: owned_provider_resource{resource="mail_edge_spool_available_bytes"} < 1073741824
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Mail Edge raw spool has less than 1 GiB available
+      - alert: OwnedProviderMailEdgeCallbackStale
+        expr: owned_provider_objects{kind="mail_edge_callback_processing"} > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: A Mail Edge callback remains unsettled
+      - alert: OwnedProviderMailEdgeOutboundQuarantined
+        expr: owned_provider_objects{kind="mail_edge_outbound_quarantined"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: A Mail Edge outbound outcome requires reconciliation

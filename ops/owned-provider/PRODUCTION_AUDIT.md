@@ -2,7 +2,8 @@
 
 ## Implemented in this fork
 
-- pinned official upstream lineage with a contained operations-only overlay;
+- pinned official upstream lineage with an allowlisted operations overlay and
+  hardened provider-neutral Mail Edge host boundary;
 - file-mounted independent secrets, PKCS#1 DKIM key, config fail-closed audit,
   unprivileged read-only application containers, dropped capabilities, resource
   limits, persistent state, and loopback-by-default publication;
@@ -20,6 +21,11 @@
   clean-volume restore, and point-in-time marker proof across owned components;
 - a read-only upstream drift lane reporting replay conflicts, routes,
   configuration, migrations, Dockerfile, and mail-handler changes.
+- strict rendered Mail Edge configuration, file-mounted key rotation and
+  scoped operator secrets, file-backed raw admission, signed callback and raw
+  grant validation, fenced same-delivery-ID recovery, local binding/outbound
+  projections, edge-aware readiness/metrics, bounded shutdown, and complete
+  backup inventory for every local Mail Edge table/config/secret.
 
 ## External production requirements
 
@@ -41,6 +47,9 @@ Software cannot truthfully provision or attest these without operator authority:
    obligations.
 8. A staging drill on the real topology using controlled recipients before any
    public traffic change.
+9. A compatible external Mail Edge release, tenant credentials, host-signing
+   keys, operator scopes, versioned object storage, KMS, PostgreSQL/queue
+   operations, provider qualifications, and its own backup/restore evidence.
 
 `production-audit` validates local configuration; it does not claim these
 external controls exist. Do not deploy publicly until each has named evidence

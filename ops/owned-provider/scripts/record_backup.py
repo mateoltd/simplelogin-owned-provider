@@ -23,7 +23,9 @@ def main():
             {"size": args.size, "sha256": args.sha256},
         )
         Session.commit()
-    print(json.dumps({"backup_recorded": True, "size_bytes": args.size}, sort_keys=True))
+    print(
+        json.dumps({"backup_recorded": True, "size_bytes": args.size}, sort_keys=True)
+    )
 
 
 if __name__ == "__main__":
