@@ -52,7 +52,9 @@ def decrypt(source: Path, destination: Path, key_path: Path):
         src.seek(size - 16)
         tag = src.read(16)
         src.seek(ciphertext_start)
-        decryptor = Cipher(algorithms.AES(key(key_path)), modes.GCM(nonce, tag)).decryptor()
+        decryptor = Cipher(
+            algorithms.AES(key(key_path)), modes.GCM(nonce, tag)
+        ).decryptor()
         temporary = destination.with_suffix(destination.suffix + ".tmp")
         try:
             with temporary.open("wb") as dst:

@@ -26,7 +26,9 @@ def api(method, path, body=None, api_key=None, expected=(200,)):
         headers["Content-Type"] = "application/json"
     if api_key:
         headers["Authentication"] = api_key
-    request = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
+    request = urllib.request.Request(
+        BASE + path, data=data, headers=headers, method=method
+    )
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             status, payload = response.status, json.loads(response.read(1_000_000))
@@ -85,7 +87,9 @@ def run_once() -> dict:
         result["api"] = True
         if api("POST", f"/api/aliases/{alias_id}/toggle", api_key=api_key)["enabled"]:
             raise RuntimeError("first alias toggle did not disable")
-        if not api("POST", f"/api/aliases/{alias_id}/toggle", api_key=api_key)["enabled"]:
+        if not api("POST", f"/api/aliases/{alias_id}/toggle", api_key=api_key)[
+            "enabled"
+        ]:
             raise RuntimeError("second alias toggle did not enable")
         api("DELETE", f"/api/aliases/{alias_id}", api_key=api_key)
         alias_id = None
@@ -100,7 +104,9 @@ def run_once() -> dict:
                 raise RuntimeError(f"SMTP EHLO returned {code}")
         result["smtp"] = True
         relay_host = os.environ["POSTFIX_SERVER"].split(",", 1)[0].strip()
-        with smtplib.SMTP(relay_host, int(os.environ["POSTFIX_PORT"]), timeout=10) as relay:
+        with smtplib.SMTP(
+            relay_host, int(os.environ["POSTFIX_PORT"]), timeout=10
+        ) as relay:
             code, _ = relay.ehlo()
             if code != 250:
                 raise RuntimeError(f"outbound relay EHLO returned {code}")

@@ -39,7 +39,10 @@ initialize_runtime() {
   for name in \
     postgres_password flask_secret partner_api_token_secret \
     recovery_code_hmac_secret alias_transfer_token_secret verp_email_secret \
-    master_enc_key_hex mac_key_hex abuser_hkdf_salt backup_encryption_key
+    master_enc_key_hex mac_key_hex abuser_hkdf_salt backup_encryption_key \
+    mail_edge_tenant_bearer mail_edge_opaque_token_key \
+    mail_edge_host_key_current mail_edge_host_key_previous \
+    mail_edge_operator_bearer mail_edge_privileged_operator_bearer
   do
     if [[ ! -f "$runtime_dir/secrets/$name" ]]; then
       openssl rand -hex 32 >"$runtime_dir/secrets/$name"
@@ -77,8 +80,17 @@ load_env_file() {
   done <"$config_file"
 }
 
+clear_configuration_environment() {
+  local name
+  while IFS= read -r name; do
+    unset "$name"
+  done < <(compgen -v | sed -n '/^OWNED_PROVIDER_/p')
+  unset SIMPLELOGIN_UPSTREAM_COMMIT
+}
+
 load_configuration() {
   initialize_runtime
+  clear_configuration_environment
   load_env_file
   if [[ -n "${SIMPLELOGIN_UPSTREAM_COMMIT:-}" && "$SIMPLELOGIN_UPSTREAM_COMMIT" != "$source_commit" ]]; then
     printf 'configuration attempted to override the pinned upstream commit\n' >&2
@@ -87,17 +99,27 @@ load_configuration() {
   export OWNED_PROVIDER_RUNTIME_DIR="$runtime_dir"
   export OWNED_PROVIDER_CONFIG_FILE="$config_file"
   export SIMPLELOGIN_UPSTREAM_COMMIT="$source_commit"
+  python3 "$script_dir/scripts/mail_edge_config.py" "$runtime_dir/mail-edge.json"
+  if [[ "${OWNED_PROVIDER_MAIL_EDGE_ENABLED:-0}" == "1" ]]; then
+    export OWNED_PROVIDER_MAIL_EDGE_CONFIG_PATH=/run/mail-edge/config.json
+  elif [[ "${OWNED_PROVIDER_MAIL_EDGE_ENABLED:-0}" == "0" ]]; then
+    unset OWNED_PROVIDER_MAIL_EDGE_CONFIG_PATH
+  else
+    printf 'OWNED_PROVIDER_MAIL_EDGE_ENABLED must be 0 or 1\n' >&2
+    exit 1
+  fi
   [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]]
   git -C "$repository_root" cat-file -e "${source_commit}^{commit}"
 }
 
 compose() {
-  local profile=()
   if is_test_mode; then
-    profile=(--profile test)
+    docker compose --project-name "$project_name" --env-file "$config_file" \
+      --file "$compose_file" --profile test "$@"
+  else
+    docker compose --project-name "$project_name" --env-file "$config_file" \
+      --file "$compose_file" "$@"
   fi
-  docker compose --project-name "$project_name" --env-file "$config_file" \
-    --file "$compose_file" "${profile[@]}" "$@"
 }
 
 is_test_mode() {
@@ -144,10 +166,12 @@ ensure_volume() {
 prepare_volumes() {
   ensure_volume simplelogin-owned-provider_uploads uploads
   ensure_volume simplelogin-owned-provider_unsent unsent
+  ensure_volume simplelogin-owned-provider_mail-edge-spool mail-edge-spool
   docker run --rm --platform linux/amd64 --user 0 --entrypoint sh \
     -v simplelogin-owned-provider_uploads:/code/static/upload \
     -v simplelogin-owned-provider_unsent:/code/var/unsent \
-    "$image" -c 'chown -R 65532:65532 /code/static/upload /code/var/unsent'
+    -v simplelogin-owned-provider_mail-edge-spool:/code/var/mail-edge-spool \
+    "$image" -c 'chown -R 65532:65532 /code/static/upload /code/var/unsent /code/var/mail-edge-spool'
 }
 
 build_images() {
@@ -162,14 +186,17 @@ run_migrations() {
 }
 
 start_application() {
-  compose up --detach postgres redis
+  # A prior clean-machine drill may leave stopped containers whose secret bind
+  # sources belonged to the now-removed recovery runtime. Recreate these two
+  # stateful containers without touching their named volumes.
+  compose up --detach --force-recreate postgres redis
   mail_store_up
   prepare_volumes
   run_migrations
   compose --profile tools run --rm bootstrap
-  compose up --detach app email job-runner
+  compose up --detach --force-recreate app email job-runner
   wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT:-17777}/health"
-  compose up --detach observer synthetic
+  compose up --detach --force-recreate observer synthetic
   wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_OBSERVER_PORT:-19090}/readyz"
 }
 
@@ -237,14 +264,14 @@ run_export() {
   archive_volume simplelogin-owned-provider_uploads "$output/uploads.tar"
   archive_volume simplelogin-owned-provider_unsent "$output/unsent.tar"
   archive_volume simplelogin-owned-provider_redis "$output/redis.tar"
-  local components='["postgres","redis","uploads","unsent"]'
+  local components='["postgres","redis","uploads","unsent","mail-edge-host-projections"]'
   if is_test_mode; then
     archive_volume simplelogin-owned-provider_mailpit "$output/mail-store.tar"
-    components='["postgres","redis","uploads","unsent","mail-store"]'
+    components='["postgres","redis","uploads","unsent","mail-store","mail-edge-host-projections"]'
   fi
   {
     printf 'format=simplelogin-owned-provider-state\n'
-    printf 'format_version=2\n'
+    printf 'format_version=3\n'
     printf 'upstream_commit=%s\n' "$source_commit"
     printf 'local_head=%s\n' "$(git -C "$repository_root" rev-parse HEAD)"
     printf 'schema_revision=%s\n' "$schema_revision"
@@ -252,6 +279,7 @@ run_export() {
     printf 'checkpoint_utc=%s\n' "$checkpoint"
     printf 'components=%s\n' "$components"
     printf 'database_sha256=%s\n' "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$output/database-digest.json")"
+    printf 'mail_edge_config_sha256=%s\n' "$(shasum -a 256 "$runtime_dir/mail-edge.json" | awk '{print $1}')"
   } >"$output/MANIFEST"
   (
     cd "$output"
@@ -267,20 +295,40 @@ run_export() {
 verify_export() {
   local state_dir="$1"
   [[ -f "$state_dir/MANIFEST" && -f "$state_dir/SHA256SUMS" ]]
-  (cd "$state_dir" && shasum -a 256 --check SHA256SUMS)
+  (cd "$state_dir" && shasum -a 256 --check SHA256SUMS) >&2
   grep -qx 'format=simplelogin-owned-provider-state' "$state_dir/MANIFEST"
-  grep -qx 'format_version=2' "$state_dir/MANIFEST"
   grep -qx "upstream_commit=$source_commit" "$state_dir/MANIFEST"
+  local version
+  version="$(sed -n 's/^format_version=//p' "$state_dir/MANIFEST")"
+  case "$version" in
+    2|3) ;;
+    *)
+      printf 'unsupported state export format version: %s\n' "$version" >&2
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$version"
 }
 
 run_import() {
   local state_dir="${1:?import requires a state export directory}"
   state_dir="$(cd "$state_dir" && pwd)"
-  verify_export "$state_dir"
+  local state_version
+  state_version="$(verify_export "$state_dir")"
+  if [[ "$state_version" == 3 ]]; then
+    local expected_config actual_config
+    expected_config="$(sed -n 's/^mail_edge_config_sha256=//p' "$state_dir/MANIFEST")"
+    actual_config="$(shasum -a 256 "$runtime_dir/mail-edge.json" | awk '{print $1}')"
+    if [[ -z "$expected_config" || "$expected_config" != "$actual_config" ]]; then
+      printf 'Mail Edge configuration differs from the state checkpoint\n' >&2
+      return 1
+    fi
+  fi
   compose down --volumes --remove-orphans
   ensure_volume simplelogin-owned-provider_uploads uploads
   ensure_volume simplelogin-owned-provider_unsent unsent
   ensure_volume simplelogin-owned-provider_redis redis
+  ensure_volume simplelogin-owned-provider_mail-edge-spool mail-edge-spool
   if [[ -f "$state_dir/mail-store.tar" ]]; then
     ensure_volume simplelogin-owned-provider_mailpit mailpit
   fi
@@ -297,9 +345,15 @@ run_import() {
   prepare_volumes
   compose up --detach redis
   mail_store_up
-  compose --profile tools run --rm --no-deps app \
-    python ops/owned-provider/scripts/database_digest.py | tail -1 \
-    >"$runtime_dir/evidence/import-digest.json"
+  if [[ "$state_version" == 2 ]]; then
+    compose --profile tools run --rm --no-deps app \
+      python ops/owned-provider/scripts/database_digest.py --legacy-pre-mail-edge | tail -1 \
+      >"$runtime_dir/evidence/import-digest.json"
+  else
+    compose --profile tools run --rm --no-deps app \
+      python ops/owned-provider/scripts/database_digest.py | tail -1 \
+      >"$runtime_dir/evidence/import-digest.json"
+  fi
   local expected actual
   expected="$(sed -n 's/^database_sha256=//p' "$state_dir/MANIFEST")"
   actual="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$runtime_dir/evidence/import-digest.json")"
@@ -350,13 +404,21 @@ run_backup() {
   (run_export "$state_dir") >/dev/null
   mkdir -p "$temporary/control/secrets"
   cp "$config_file" "$temporary/control/config.env"
+  cp "$runtime_dir/mail-edge.json" "$temporary/control/mail-edge.json"
   local secret
   for secret in "$runtime_dir"/secrets/*; do
     if [[ "$(basename "$secret")" != "backup_encryption_key" ]]; then
       cp "$secret" "$temporary/control/secrets/"
     fi
   done
-  chmod 600 "$temporary/control/config.env" "$temporary/control/secrets"/*
+  chmod 600 "$temporary/control/config.env" "$temporary/control/mail-edge.json" "$temporary/control/secrets"/*
+  {
+    printf 'format=simplelogin-owned-provider-control\n'
+    printf 'format_version=1\n'
+    printf 'config_sha256=%s\n' "$(shasum -a 256 "$temporary/control/config.env" | awk '{print $1}')"
+    printf 'mail_edge_config_sha256=%s\n' "$(shasum -a 256 "$temporary/control/mail-edge.json" | awk '{print $1}')"
+    printf 'secret_names=%s\n' "$(find "$temporary/control/secrets" -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()], separators=(",", ":")))')"
+  } >"$temporary/control/MANIFEST"
   archive="$temporary/backup.tar"
   docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" --entrypoint tar \
     -v "$temporary:/source" "$image" \
@@ -391,16 +453,47 @@ extract_backup() {
     -v "$temporary:/target" "$image" -C /target -xf /target/backup.tar
 }
 
+restored_control_version=
+
 restore_control() {
   local control="$1"
+  local state_version="$2"
+  if [[ ! -f "$control/MANIFEST" ]]; then
+    if [[ "$state_version" != 2 || -e "$control/mail-edge.json" ]]; then
+      printf 'backup control manifest is missing\n' >&2
+      return 1
+    fi
+    [[ -f "$control/config.env" && -d "$control/secrets" ]]
+    restored_control_version=0
+    cp "$control/config.env" "$config_file"
+    chmod 600 "$config_file"
+    mkdir -p "$runtime_dir/secrets"
+    cp "$control/secrets"/* "$runtime_dir/secrets/"
+    chmod 600 "$runtime_dir/secrets"/*
+    return
+  fi
+  grep -qx 'format=simplelogin-owned-provider-control' "$control/MANIFEST"
+  grep -qx 'format_version=1' "$control/MANIFEST"
+  local expected_config expected_mail_edge actual_config actual_mail_edge expected_secrets actual_secrets
+  expected_config="$(sed -n 's/^config_sha256=//p' "$control/MANIFEST")"
+  expected_mail_edge="$(sed -n 's/^mail_edge_config_sha256=//p' "$control/MANIFEST")"
+  actual_config="$(shasum -a 256 "$control/config.env" | awk '{print $1}')"
+  actual_mail_edge="$(shasum -a 256 "$control/mail-edge.json" | awk '{print $1}')"
+  [[ "$expected_config" == "$actual_config" && "$expected_mail_edge" == "$actual_mail_edge" ]]
+  expected_secrets="$(sed -n 's/^secret_names=//p' "$control/MANIFEST")"
+  actual_secrets="$(find "$control/secrets" -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()], separators=(",", ":")))')"
+  [[ "$expected_secrets" == "$actual_secrets" ]]
   cp "$control/config.env" "$config_file"
+  cp "$control/mail-edge.json" "$runtime_dir/mail-edge.json"
   chmod 600 "$config_file"
   mkdir -p "$runtime_dir/secrets"
   cp "$control/secrets"/* "$runtime_dir/secrets/"
-  chmod 600 "$runtime_dir/secrets"/*
+  chmod 600 "$runtime_dir/mail-edge.json" "$runtime_dir/secrets"/*
+  restored_control_version=1
 }
 
 reload_restored_configuration() {
+  clear_configuration_environment
   load_env_file
   if [[ -n "${SIMPLELOGIN_UPSTREAM_COMMIT:-}" && "$SIMPLELOGIN_UPSTREAM_COMMIT" != "$source_commit" ]]; then
     printf 'restored configuration differs from the pinned upstream commit\n' >&2
@@ -409,6 +502,14 @@ reload_restored_configuration() {
   export OWNED_PROVIDER_RUNTIME_DIR="$runtime_dir"
   export OWNED_PROVIDER_CONFIG_FILE="$config_file"
   export SIMPLELOGIN_UPSTREAM_COMMIT="$source_commit"
+  if [[ "$restored_control_version" == 0 ]]; then
+    python3 "$script_dir/scripts/mail_edge_config.py" "$runtime_dir/mail-edge.json"
+  fi
+  if [[ "${OWNED_PROVIDER_MAIL_EDGE_ENABLED:-0}" == "1" ]]; then
+    export OWNED_PROVIDER_MAIL_EDGE_CONFIG_PATH=/run/mail-edge/config.json
+  else
+    unset OWNED_PROVIDER_MAIL_EDGE_CONFIG_PATH
+  fi
 }
 
 run_restore() {
@@ -419,7 +520,9 @@ run_restore() {
   temporary="$(mktemp -d "$runtime_dir/backups/.restore.XXXXXX")"
   trap 'rm -rf -- "$temporary"' EXIT
   extract_backup "$backup" "$temporary"
-  restore_control "$temporary/control"
+  local state_version
+  state_version="$(verify_export "$temporary/state")"
+  restore_control "$temporary/control" "$state_version"
   reload_restored_configuration
   run_import "$temporary/state"
   rm -rf -- "$temporary"
@@ -448,9 +551,9 @@ run_queue_drill() {
   job_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["job_id"])' "$created")"
   compose --profile tools run --rm --no-deps e2e \
     python ops/owned-provider/scripts/queue_resilience.py wait "$job_id" taken --timeout 60
-  compose start mailpit >/dev/null
   compose --profile tools run --rm --no-deps e2e \
     python ops/owned-provider/scripts/queue_resilience.py age "$job_id"
+  compose start mailpit >/dev/null
   compose --profile tools run --rm --no-deps e2e \
     python ops/owned-provider/scripts/queue_resilience.py wait "$job_id" done --timeout 90
 }
@@ -481,12 +584,23 @@ run_reconcile() {
     python ops/owned-provider/scripts/reconcile.py
 }
 
+run_mail_edge_restore_probe() {
+  if ! is_test_mode; then
+    printf 'the Mail Edge restore probe is restricted to contained test mode\n' >&2
+    return 1
+  fi
+  compose --profile tools run --rm --no-deps \
+    -e MAIL_EDGE_CONFIG_PATH=/run/mail-edge/config.json \
+    e2e python ops/owned-provider/scripts/mail_edge_restore_probe.py "$@"
+}
+
 run_drill() {
   if ! is_test_mode; then
     printf 'the destructive recovery drill is restricted to contained test mode\n' >&2
     return 1
   fi
   local stamp evidence backup checkpoint_marker after_marker capacity
+  local mail_edge_checkpoint mail_edge_restore mail_edge_callback
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   evidence="$runtime_dir/evidence/drill-$stamp.json"
   backup="$runtime_dir/backups/drill-$stamp.opb"
@@ -496,6 +610,7 @@ run_drill() {
   run_queue_drill
   run_restart_drill >/dev/null
   capacity="$(run_load 10000 | tail -1)"
+  mail_edge_checkpoint="$(run_mail_edge_restore_probe seed | tail -1)"
   run_reconcile >/dev/null
   compose --profile tools run --rm --no-deps e2e \
     python ops/owned-provider/scripts/restore_fixture.py put "$checkpoint_marker" --phase checkpoint >/dev/null
@@ -519,10 +634,30 @@ run_drill() {
     unset OWNED_PROVIDER_CONFIG_FILE
     OWNED_PROVIDER_RUNTIME_DIR="$clean_runtime" "$0" post-restore >/dev/null
   )
+  mail_edge_restore="$(
+    (
+      unset OWNED_PROVIDER_CONFIG_FILE
+      OWNED_PROVIDER_RUNTIME_DIR="$clean_runtime" "$0" mail-edge-restore-probe verify "$mail_edge_checkpoint"
+    ) | tail -1
+  )"
+  mail_edge_callback="$(
+    (
+      unset OWNED_PROVIDER_CONFIG_FILE
+      OWNED_PROVIDER_RUNTIME_DIR="$clean_runtime" "$0" mail-edge-restore-probe callback
+    ) | tail -1
+  )"
+  (
+    unset OWNED_PROVIDER_CONFIG_FILE
+    OWNED_PROVIDER_RUNTIME_DIR="$clean_runtime" "$0" audit >/dev/null
+  )
+  (
+    unset OWNED_PROVIDER_CONFIG_FILE
+    OWNED_PROVIDER_RUNTIME_DIR="$clean_runtime" "$0" reconcile >/dev/null
+  )
   local digest
   digest="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$clean_runtime/evidence/import-digest.json")"
-  printf '{"backup":"%s","checkpoint_utc":"%s","database_sha256":"%s","capacity":%s,"components":{"postgres":"restored","redis":"restored","uploads":"restored","unsent":"restored","mail_store":"restored"},"post_restore_api_mail":"ok"}\n' \
-    "$backup" "$stamp" "$digest" "$capacity" | tee "$evidence"
+  printf '{"backup":"%s","checkpoint_utc":"%s","database_sha256":"%s","capacity":%s,"mail_edge_state":%s,"mail_edge_callback":%s,"components":{"postgres":"restored","redis":"restored","uploads":"restored","unsent":"restored","mail_store":"restored","mail_edge_host_projections":"restored","mail_edge_config":"restored","mail_edge_secrets":"restored","mail_edge_spool":"ephemeral_recreated"},"post_restore_api_mail":"ok"}\n' \
+    "$backup" "$stamp" "$digest" "$capacity" "$mail_edge_restore" "$mail_edge_callback" | tee "$evidence"
 }
 
 run_dns_preflight() {
@@ -550,11 +685,53 @@ run_lifecycle() {
     app python ops/owned-provider/scripts/lifecycle.py "$@"
 }
 
+run_mail_edge_lifecycle() {
+  if [[ "${OWNED_PROVIDER_MAIL_EDGE_ENABLED:-0}" != "1" ]]; then
+    printf 'Mail Edge integration is disabled\n' >&2
+    return 1
+  fi
+  compose --profile tools run --rm --no-deps app \
+    python ops/owned-provider/scripts/mail_edge_lifecycle.py "$@"
+}
+
 run_upstream_check() {
   git -C "$repository_root" fetch upstream master:refs/remotes/upstream/master
   local output="$runtime_dir/evidence/upstream-drift-$(date -u +%Y%m%dT%H%M%SZ).json"
   python3 "$script_dir/scripts/upstream_drift.py" \
     --repository "$repository_root" --candidate upstream/master --output "$output"
+}
+
+run_mail_edge_contract_check() {
+  local contract_repository="${1:?mail-edge-contract-check requires the Mail Edge repository}"
+  contract_repository="$(cd "$contract_repository" && pwd)"
+  local expected actual stamp log_file result
+  expected="$(tr -d '[:space:]' <"$script_dir/MAIL_EDGE_CONTRACT_COMMIT")"
+  actual="$(git -C "$contract_repository" rev-parse HEAD)"
+  if [[ "$actual" != "$expected" ]]; then
+    printf 'Mail Edge contract head mismatch: expected %s, got %s\n' "$expected" "$actual" >&2
+    return 1
+  fi
+  if [[ -n "$(git -C "$contract_repository" status --porcelain)" ]]; then
+    printf 'Mail Edge contract worktree must be clean\n' >&2
+    return 1
+  fi
+  require corepack
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  log_file="$runtime_dir/evidence/mail-edge-contract-$stamp.log"
+  set +e
+  (
+    cd "$contract_repository"
+    corepack pnpm --filter @mail-edge/reference-service... build
+    corepack pnpm reference-service:e2e
+  ) >"$log_file" 2>&1
+  result=$?
+  set -e
+  tail -80 "$log_file"
+  if [[ "$result" -ne 0 ]]; then
+    return "$result"
+  fi
+  printf '{"contract_head":"%s","reference_service_e2e":"passed","log":"%s"}\n' \
+    "$actual" "$log_file"
 }
 
 usage() {
@@ -603,8 +780,12 @@ case "${1:-}" in
   load) run_load "${2:-10000}" ;;
   # @command reconcile                    Validate alias/domain/mailbox relationships
   reconcile) run_reconcile ;;
+  # @command mail-edge-restore-probe ARGS Run the contained Mail Edge restore proof
+  mail-edge-restore-probe) shift; run_mail_edge_restore_probe "$@" ;;
   # @command lifecycle ARGS               Run idempotent domain/mailbox operator actions
   lifecycle) shift; run_lifecycle "$@" ;;
+  # @command mail-edge-lifecycle ARGS     Run provider-neutral binding/quarantine controls
+  mail-edge-lifecycle) shift; run_mail_edge_lifecycle "$@" ;;
   # @command dns-preflight DOMAIN         Read-only MX/SPF/DKIM/DMARC/PTR checks
   dns-preflight) run_dns_preflight "${2:-}" ;;
   # @command export [DIR]                 Create a checksummed all-state checkpoint
@@ -642,6 +823,8 @@ case "${1:-}" in
     ;;
   # @command upstream-check               Report replay conflicts and compatibility drift
   upstream-check) run_upstream_check ;;
+  # @command mail-edge-contract-check DIR Verify and exercise the exact reference service contract
+  mail-edge-contract-check) run_mail_edge_contract_check "${2:-}" ;;
   # @command logs                         Follow structured provider logs
   logs) compose logs --follow --tail 200 app email job-runner observer synthetic postgres redis mailpit ;;
   # @command down                         Stop containers but retain data

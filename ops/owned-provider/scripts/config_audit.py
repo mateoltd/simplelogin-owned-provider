@@ -12,6 +12,12 @@ import stat
 from pathlib import Path
 from urllib.parse import urlparse
 
+from mail_edge_config import (
+    MAIL_EDGE_SECRET_NAMES,
+    audit_mail_edge_document,
+    build_mail_edge_document,
+)
+
 
 RESERVED_SUFFIXES = (".test", ".example", ".invalid", ".localhost")
 HEX_SECRET_NAMES = {
@@ -56,8 +62,13 @@ def main():
     all_domains = alias_domains + custom_domains
     if len(set(all_domains)) != len(all_domains):
         failures.append("alias and custom domain lists must be unique")
-    if any(not isinstance(domain, str) or not valid_domain(domain) for domain in all_domains):
-        failures.append("domains must be valid lower-case host names without trailing dots")
+    if any(
+        not isinstance(domain, str) or not valid_domain(domain)
+        for domain in all_domains
+    ):
+        failures.append(
+            "domains must be valid lower-case host names without trailing dots"
+        )
     try:
         mail_servers = ast.literal_eval(
             os.environ["OWNED_PROVIDER_EMAIL_SERVERS_WITH_PRIORITY"]
@@ -82,7 +93,9 @@ def main():
         if os.environ.get("OWNED_PROVIDER_TEST_MODE"):
             failures.append("OWNED_PROVIDER_TEST_MODE must be absent in production")
         if any(reserved(domain) for domain in all_domains):
-            failures.append("production domains cannot use RFC-reserved fixture suffixes")
+            failures.append(
+                "production domains cannot use RFC-reserved fixture suffixes"
+            )
         relay = os.environ["OWNED_PROVIDER_SMTP_RELAY_HOST"].lower()
         if relay in {"mailpit", "localhost", "127.0.0.1"}:
             failures.append("production SMTP relay cannot be the contained test sink")
@@ -101,6 +114,14 @@ def main():
         failures.append("at least one alias domain is required")
     if not custom_domains:
         warnings.append("no operator-owned custom domains are pre-provisioned")
+    try:
+        gunicorn_timeout = int(
+            os.environ.get("OWNED_PROVIDER_GUNICORN_TIMEOUT_SECONDS", "90")
+        )
+        if not 30 <= gunicorn_timeout <= 300:
+            raise ValueError
+    except ValueError:
+        failures.append("Gunicorn timeout must be an integer from 30 through 300")
     secret_names = {
         "postgres_password",
         "flask_secret",
@@ -114,7 +135,7 @@ def main():
         "admin_password",
         "dkim_private_key",
         "backup_encryption_key",
-    }
+    } | MAIL_EDGE_SECRET_NAMES
     for name in sorted(secret_names):
         path = args.runtime / "secrets" / name
         if not path.is_file():
@@ -131,17 +152,45 @@ def main():
                 "PRIVATE KEY-----" not in value or len(value) < 1000
             ):
                 failures.append("DKIM private key is missing or malformed")
-            elif name not in HEX_SECRET_NAMES | {"admin_password", "dkim_private_key"} and len(value) < 32:
+            elif (
+                name not in HEX_SECRET_NAMES | {"admin_password", "dkim_private_key"}
+                and len(value) < 32
+            ):
                 failures.append(f"secret must contain at least 32 characters: {name}")
     config_path = Path(os.environ["OWNED_PROVIDER_CONFIG_FILE"])
     if stat.S_IMODE(config_path.stat().st_mode) != 0o600:
         failures.append("effective configuration file must be mode 0600")
+    mail_edge_enabled = os.environ.get("OWNED_PROVIDER_MAIL_EDGE_ENABLED", "0") == "1"
+    mail_edge_config_path = args.runtime / "mail-edge.json"
+    try:
+        if stat.S_IMODE(mail_edge_config_path.stat().st_mode) != 0o600:
+            failures.append("Mail Edge configuration file must be mode 0600")
+        mail_edge_document = json.loads(
+            mail_edge_config_path.read_text(encoding="utf-8")
+        )
+        if mail_edge_document != build_mail_edge_document(os.environ):
+            failures.append("Mail Edge configuration is stale or not deterministic")
+        failures.extend(
+            audit_mail_edge_document(
+                mail_edge_document,
+                os.environ,
+                args.runtime,
+                production=args.production and mail_edge_enabled,
+            )
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        failures.append(
+            f"Mail Edge configuration cannot be audited: {type(error).__name__}"
+        )
+    if args.production and not mail_edge_enabled:
+        warnings.append("Mail Edge integration is disabled")
     result = {
         "mode": mode,
         "production_audit": args.production,
         "passed": not failures,
         "alias_domain_count": len(alias_domains),
         "custom_domain_count": len(custom_domains),
+        "mail_edge_enabled": mail_edge_enabled,
         "failures": failures,
         "warnings": warnings,
     }

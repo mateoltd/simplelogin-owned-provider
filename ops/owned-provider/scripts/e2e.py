@@ -37,6 +37,14 @@ MAX_BODY = 2_000_000
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
 
 
+def clear_rate_limit_state():
+    client = redis.Redis.from_url(os.environ["MEM_STORE_URI"])
+    try:
+        client.flushdb()
+    finally:
+        client.close()
+
+
 def http_request(
     method: str, path: str, body=None, api_key=None, expected=(200,), client=opener
 ):
@@ -349,7 +357,7 @@ def main():
 
     queue_job_id = queue_probe()
 
-    redis.Redis.from_url(os.environ["MEM_STORE_URI"]).flushdb()
+    clear_rate_limit_state()
 
     def create_concurrent(index: int):
         return http_request(
@@ -371,7 +379,7 @@ def main():
 
     # Test the configured request quota independently from the parallel
     # creation lock so lock rejections do not consume the quota under test.
-    redis.Redis.from_url(os.environ["MEM_STORE_URI"]).flushdb()
+    clear_rate_limit_state()
 
     sequential_success = 0
     sequential_created = []
@@ -385,7 +393,7 @@ def main():
         sequential_created.append(payload)
     assert sequential_success == 20
     assert rate_limited == {"error": "Rate limit exceeded"}
-    redis.Redis.from_url(os.environ["MEM_STORE_URI"]).flushdb()
+    clear_rate_limit_state()
 
     for alias_id in [
         custom_alias["id"],

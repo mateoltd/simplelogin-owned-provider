@@ -20,16 +20,17 @@ from server import create_light_app
 UPLOAD_ROOT = Path("/code/static/upload")
 UNSENT_ROOT = Path("/code/var/unsent")
 MAILPIT = os.environ["OWNED_PROVIDER_MAILPIT_URL"].rstrip("/")
-REDIS = redis.Redis.from_url(os.environ["MEM_STORE_URI"])
 
 
 def message_exists(subject: str) -> bool:
-    with urllib.request.urlopen(f"{MAILPIT}/api/v1/messages?limit=200", timeout=10) as response:
+    with urllib.request.urlopen(
+        f"{MAILPIT}/api/v1/messages?limit=200", timeout=10
+    ) as response:
         messages = json.loads(response.read(2_000_000)).get("messages", [])
     return any(item.get("Subject") == subject for item in messages)
 
 
-def put(marker: str, phase: str):
+def put(redis_client: redis.Redis, marker: str, phase: str):
     Session.execute(
         """
         INSERT INTO owned_provider.restore_marker(marker, phase)
@@ -39,7 +40,7 @@ def put(marker: str, phase: str):
         {"marker": marker, "phase": phase},
     )
     Session.commit()
-    REDIS.set(f"owned-provider:restore:{marker}", phase)
+    redis_client.set(f"owned-provider:restore:{marker}", phase)
     path = UPLOAD_ROOT / f"restore-{marker}.txt"
     path.write_text(f"{phase}\n")
     unsent_path = UNSENT_ROOT / f"restore-{marker}.txt"
@@ -58,14 +59,14 @@ def put(marker: str, phase: str):
         raise RuntimeError("Mailpit did not persist the restore marker")
 
 
-def exists(marker: str) -> dict:
+def exists(redis_client: redis.Redis, marker: str) -> dict:
     database = bool(
         Session.execute(
             "SELECT 1 FROM owned_provider.restore_marker WHERE marker=:marker",
             {"marker": marker},
         ).scalar()
     )
-    redis_value = REDIS.get(f"owned-provider:restore:{marker}")
+    redis_value = redis_client.get(f"owned-provider:restore:{marker}")
     upload = UPLOAD_ROOT.joinpath(f"restore-{marker}.txt").is_file()
     unsent = UNSENT_ROOT.joinpath(f"restore-{marker}.txt").is_file()
     mail = message_exists(f"restore-{marker}")
@@ -85,25 +86,29 @@ def main():
     parser.add_argument("--phase", choices=("checkpoint", "after-checkpoint"))
     parser.add_argument("--expected", choices=("present", "absent"))
     args = parser.parse_args()
-    with create_light_app().app_context():
-        if args.action == "put":
-            if not args.phase:
-                parser.error("put requires --phase")
-            put(args.marker, args.phase)
-            result = exists(args.marker)
-            if not all(result.values()):
-                raise RuntimeError(f"failed to create all markers: {result}")
-        else:
-            if not args.expected:
-                parser.error("verify requires --expected")
-            result = exists(args.marker)
-            expected = args.expected == "present"
-            if any(value != expected for value in result.values()):
-                raise RuntimeError(
-                    f"restore marker {args.marker} expected {args.expected}: {result}"
-                )
-        result.update({"marker": args.marker, "action": args.action})
-        print(json.dumps(result, sort_keys=True))
+    redis_client = redis.Redis.from_url(os.environ["MEM_STORE_URI"])
+    try:
+        with create_light_app().app_context():
+            if args.action == "put":
+                if not args.phase:
+                    parser.error("put requires --phase")
+                put(redis_client, args.marker, args.phase)
+                result = exists(redis_client, args.marker)
+                if not all(result.values()):
+                    raise RuntimeError(f"failed to create all markers: {result}")
+            else:
+                if not args.expected:
+                    parser.error("verify requires --expected")
+                result = exists(redis_client, args.marker)
+                expected = args.expected == "present"
+                if any(value != expected for value in result.values()):
+                    raise RuntimeError(
+                        f"restore marker {args.marker} expected {args.expected}: {result}"
+                    )
+            result.update({"marker": args.marker, "action": args.action})
+            print(json.dumps(result, sort_keys=True))
+    finally:
+        redis_client.close()
 
 
 if __name__ == "__main__":

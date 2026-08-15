@@ -2,13 +2,17 @@
 
 This directory is a reusable, production operations overlay for SimpleLogin.
 `UPSTREAM_COMMIT` machine-checks the official upstream pin
-`dbc45fcce4e8e6b4fa615cc729ca95a67bf75266`. All changes remain below
-`ops/owned-provider/` (plus the repository ignore rule), keeping upgrades
+`dbc45fcce4e8e6b4fa615cc729ca95a67bf75266`. The allowlisted fork delta consists
+of this operations overlay plus the provider-neutral `app/mail_edge` host, its
+focused SimpleLogin integration points, migrations, documentation, and tests.
+The host audit rejects changes outside that boundary, keeping upgrades
 replayable.
 
 It operates arbitrary operator-owned alias domains and mailboxes through the
 upstream API and mail pipeline. The overlay supplies deployment lifecycle,
 observability, capacity validation, upgrades, and disaster recovery.
+Mail Edge is opt-in and remains an external durability boundary; this stack
+does not embed a provider, account, region, DNS mutation, or migration policy.
 
 ## Contained end-to-end environment
 
@@ -21,7 +25,8 @@ ops/owned-provider/bin/owned-provider e2e
 ops/owned-provider/bin/owned-provider drill
 ```
 
-`init` creates `.owned-provider/config.env` plus independent mode-0600 secrets.
+`init` creates `.owned-provider/config.env`, a deterministic strict
+`.owned-provider/mail-edge.json`, plus independent mode-0600 secrets.
 All test ports bind to loopback, Mailpit captures outbound mail, and RFC-reserved
 example domains are used except for the configurable mailbox-domain MX lookup.
 Nothing publishes mail or changes DNS.
@@ -65,6 +70,7 @@ ops/owned-provider/bin/owned-provider load 10000
 ops/owned-provider/bin/owned-provider backup /backups/provider.opb
 ops/owned-provider/bin/owned-provider restore /backups/provider.opb
 ops/owned-provider/bin/owned-provider upstream-check
+ops/owned-provider/bin/owned-provider mail-edge-contract-check /path/to/mail-edge
 ```
 
 Runbooks:

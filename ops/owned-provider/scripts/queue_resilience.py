@@ -41,7 +41,9 @@ def wait_for(job_id: int, expected: str, timeout: int) -> dict:
         if job is None:
             raise RuntimeError(f"job disappeared: {job_id}")
         if job.state == JobState.error.value:
-            raise RuntimeError(f"job entered terminal error after {job.attempts} attempts")
+            raise RuntimeError(
+                f"job entered terminal error after {job.attempts} attempts"
+            )
         if job.state == expected_state:
             return {
                 "job_id": job.id,

@@ -8,6 +8,7 @@ import os
 import shutil
 import time
 import urllib.request
+import urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import redis
@@ -21,7 +22,9 @@ from server import create_light_app
 
 APP = create_light_app()
 STARTED = time.monotonic()
-UPSTREAM = open("/code/ops/owned-provider/UPSTREAM_COMMIT", encoding="utf-8").read().strip()
+UPSTREAM = (
+    open("/code/ops/owned-provider/UPSTREAM_COMMIT", encoding="utf-8").read().strip()
+)
 
 
 def scalar(sql: str, params=None):
@@ -32,6 +35,7 @@ def collect() -> dict:
     started = time.monotonic()
     result = {
         "http": False,
+        "mail_edge": None,
         "postgres": False,
         "redis": False,
         "migration_at_head": False,
@@ -47,11 +51,23 @@ def collect() -> dict:
     try:
         with urllib.request.urlopen("http://app:7777/health", timeout=3) as response:
             result["http"] = response.status == 200 and response.read() == b"success"
+        if os.environ.get("MAIL_EDGE_CONFIG_PATH"):
+            try:
+                with urllib.request.urlopen(
+                    "http://app:7777/health/mail-edge/readyz", timeout=5
+                ) as response:
+                    result["mail_edge"] = response.status == 200
+                    response.read(1_048_577)
+            except (OSError, urllib.error.HTTPError):
+                result["mail_edge"] = False
         redis_client = redis.Redis.from_url(
             os.environ["MEM_STORE_URI"], socket_timeout=2
         )
-        result["redis"] = bool(redis_client.ping())
-        redis_info = redis_client.info("memory")
+        try:
+            result["redis"] = bool(redis_client.ping())
+            redis_info = redis_client.info("memory")
+        finally:
+            redis_client.close()
         result["resources"]["redis_used_memory_bytes"] = int(
             redis_info.get("used_memory", 0)
         )
@@ -66,6 +82,19 @@ def collect() -> dict:
             result["migration_at_head"] = current == expected
             for name in ("alias", "mailbox", "custom_domain", "contact", "email_log"):
                 result["counts"][name] = scalar(f'SELECT count(*) FROM "{name}"')
+            for name in (
+                "mail_edge_replay_nonce",
+                "mail_edge_callback_receipt",
+                "mail_edge_outbound_projection",
+                "mail_edge_route_binding_projection",
+            ):
+                result["counts"][name] = scalar(f'SELECT count(*) FROM "{name}"')
+            result["counts"]["mail_edge_callback_processing"] = scalar(
+                "SELECT count(*) FROM mail_edge_callback_receipt WHERE status='processing'"
+            )
+            result["counts"]["mail_edge_outbound_quarantined"] = scalar(
+                "SELECT count(*) FROM mail_edge_outbound_projection WHERE quarantined"
+            )
             for label, state in (
                 ("ready", JobState.ready.value),
                 ("taken", JobState.taken.value),
@@ -130,6 +159,9 @@ def collect() -> dict:
         result["resources"]["volume_available_bytes"] = shutil.disk_usage(
             "/code/static/upload"
         ).free
+        result["resources"]["mail_edge_spool_available_bytes"] = shutil.disk_usage(
+            "/code/var/mail-edge-spool"
+        ).free
     except Exception as error:
         Session.rollback()
         result["error"] = f"{type(error).__name__}: {error}"[:300]
@@ -141,8 +173,8 @@ def collect() -> dict:
             result["postgres"],
             result["redis"],
             result["migration_at_head"],
-            result["jobs"].get("oldest_taken_seconds", stale_limit + 1)
-            <= stale_limit,
+            result["mail_edge"] is not False,
+            result["jobs"].get("oldest_taken_seconds", stale_limit + 1) <= stale_limit,
         )
     )
     return result
@@ -156,7 +188,9 @@ def metrics(data: dict) -> str:
         "# HELP owned_provider_dependency_up Whether a required dependency is up.",
         "# TYPE owned_provider_dependency_up gauge",
     ]
-    for dependency in ("http", "postgres", "redis"):
+    for dependency in ("http", "postgres", "redis", "mail_edge"):
+        if data[dependency] is None:
+            continue
         lines.append(
             f'owned_provider_dependency_up{{dependency="{dependency}"}} {int(data[dependency])}'
         )
@@ -175,7 +209,9 @@ def metrics(data: dict) -> str:
         ]
     )
     for state in ("ready", "taken", "done", "error"):
-        lines.append(f'owned_provider_jobs{{state="{state}"}} {data["jobs"].get(state, 0)}')
+        lines.append(
+            f'owned_provider_jobs{{state="{state}"}} {data["jobs"].get(state, 0)}'
+        )
     lines.extend(
         [
             "# HELP owned_provider_job_oldest_seconds Age of the oldest queued or taken job.",
