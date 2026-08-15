@@ -563,6 +563,18 @@ b2xk
     assert "b2xk" not in new_msg.as_string()
 
 
+@patch("app.email_utils.LOG.w")
+def test_replace_bounds_undecodable_payload_log(log_warning):
+    payload = "=FF" + "a" * 500
+    msg = email.message_from_string(
+        "Content-Type: text/plain; charset=utf-8\n"
+        "Content-Transfer-Encoding: quoted-printable\n\n" + payload
+    )
+
+    assert replace(msg, "old", "new") is msg
+    log_warning.assert_called_once_with("cannot decode payload: %s", payload[:200])
+
+
 def test_replace_multipart_alternative():
     msg = email.message_from_string(
         """Content-Type: multipart/alternative;
