@@ -35,6 +35,8 @@ import argparse
 import email
 import hashlib
 import html
+import signal
+import threading
 import time
 import uuid
 from email import encoders
@@ -2555,6 +2557,13 @@ def main(port: int):
     mail_edge_bridge = build_mail_edge_bridge()
     if mail_edge_bridge is not None:
         register_mail_edge_process_cleanup(mail_edge_bridge)
+    stop_requested = threading.Event()
+
+    def request_stop(_signum, _frame):
+        stop_requested.set()
+
+    for stop_signal in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(stop_signal, request_stop)
     controller = Controller(
         MailHandler(),
         hostname="0.0.0.0",
@@ -2563,15 +2572,20 @@ def main(port: int):
     )
 
     controller.start()
-    LOG.d("Start mail controller %s %s", controller.hostname, controller.port)
-    send_version_event("email_handler")
+    try:
+        LOG.d("Start mail controller %s %s", controller.hostname, controller.port)
+        send_version_event("email_handler")
 
-    if config.LOAD_PGP_EMAIL_HANDLER:
-        LOG.w("LOAD PGP keys")
-        load_pgp_public_keys()
+        if config.LOAD_PGP_EMAIL_HANDLER:
+            LOG.w("LOAD PGP keys")
+            load_pgp_public_keys()
 
-    while True:
-        time.sleep(2)
+        while not stop_requested.wait(2):
+            pass
+    finally:
+        controller.stop()
+        if mail_edge_bridge is not None and not mail_edge_bridge.close():
+            LOG.e("Mail Edge bridge did not close before the shutdown deadline")
 
 
 if __name__ == "__main__":
