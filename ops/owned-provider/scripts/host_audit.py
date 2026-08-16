@@ -6,6 +6,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+from log_wrapper import sensitive_kinds
+
 
 def command(*args):
     return subprocess.check_output(args, text=True).strip()
@@ -40,21 +42,76 @@ def main():
         "git", "-C", str(repository), "diff", "--name-only", expected_upstream, "--"
     ).splitlines()
     exact_host_paths = {
+        ".python-version",
         ".gitignore",
+        ".dockerignore",
         "Dockerfile",
+        "app/admin/base.py",
+        "app/admin/custom_domain_search.py",
+        "app/admin/email_search.py",
+        "app/admin/index.py",
+        "app/api/base.py",
+        "app/api/serializer.py",
+        "app/api/views/auth.py",
+        "app/api/views/mailbox.py",
+        "app/auth/views/fido.py",
+        "app/dashboard/views/alias_contact_manager.py",
+        "app/dashboard/views/enter_admin.py",
+        "app/dashboard/views/fido_setup.py",
+        "app/dashboard/views/mailbox.py",
         "app/db.py",
         "app/email_utils.py",
+        "app/events/event_dispatcher.py",
+        "app/jose_utils.py",
         "app/mail_sender.py",
+        "app/mailbox_utils.py",
         "app/models.py",
+        "app/oauth/views/authorize.py",
+        "app/onboarding/utils.py",
+        "app/pgp_utils.py",
+        "app/session.py",
+        "app/webauthn_utils.py",
+        "commands/check_user_leaks.py",
+        "commands/handle_leaks.py",
+        "cron.py",
         "docs/mail-edge-bridge.md",
         "email_handler.py",
+        "job_runner.py",
+        "migrations/versions/2021_080409_9014cca7097c_.py",
+        "monitoring.py",
+        "oauth_tester.py",
         "simplelogin_app.py",
         "pyproject.toml",
+        "static/assets/js/vendors/webauthn.js",
+        "static/js/index.js",
+        "static/package-lock.json",
         "static/package.json",
+        "templates/admin/custom_domain_search.html",
+        "templates/admin/abuser_lookup.html",
+        "templates/admin/email_search.html",
+        "templates/admin/mailbox_domain_search.html",
+        "templates/base.html",
+        "templates/dashboard/subdomain.html",
+        "templates/dashboard/support.html",
         "templates/footer.html",
+        "templates/phone/phone_reservation.html",
         "templates/header.html",
+        "tests/admin/test_custom_domain_search.py",
+        "tests/admin/test_email_search.py",
+        "tests/api/test_auth_mfa.py",
+        "tests/auth/test_oidc.py",
         "tests/conftest.py",
         "tests/test_email_utils.py",
+        "tests/handler/test_encrypt_pgp.py",
+        "tests/http_socket_fixture.py",
+        "tests/test_extensions.py",
+        "tests/test_http_socket_security.py",
+        "tests/test_owned_provider_logging.py",
+        "tests/test_onboarding.py",
+        "tests/test_pgp_utils.py",
+        "tests/test_smtp_socket_security.py",
+        "tests/test_webauthn_utils.py",
+        "tests/utils.py",
         "uv.lock",
     }
     allowed_prefixes = (
@@ -150,6 +207,11 @@ def main():
         raise RuntimeError("a published port is not bound to loopback")
 
     leaked_logs = []
+    pii_logs = {}
+    service_by_id = {
+        container["Id"]: container["Config"]["Labels"].get("com.docker.compose.service")
+        for container in inspected
+    }
     for container_id in container_ids:
         completed = subprocess.run(
             ["docker", "logs", "--tail", "2000", container_id],
@@ -161,10 +223,23 @@ def main():
         for name, value in secrets.items():
             if value and value in encoded_logs:
                 leaked_logs.append(name)
+        service = service_by_id.get(container_id)
+        if service in {"app", "email", "job-runner", "observer", "synthetic"}:
+            kinds = sorted(
+                {
+                    kind
+                    for line in encoded_logs.splitlines()
+                    for kind in sensitive_kinds(line)
+                }
+            )
+            if kinds:
+                pii_logs[str(service)] = kinds
     if leaked_logs:
         raise RuntimeError(
             f"secret values leaked into service logs: {sorted(set(leaked_logs))}"
         )
+    if pii_logs:
+        raise RuntimeError(f"raw PII/auth material remains in service logs: {pii_logs}")
 
     app_id = next(
         item["Id"]
@@ -179,11 +254,13 @@ def main():
             command("docker", "inspect", "--format", "{{.Image}}", app_id),
         )
     )[0]
+    image_id = image["Id"]
     labels = image["Config"].get("Labels", {})
     revision = labels.get("org.opencontainers.image.revision")
     upstream_revision = labels.get("org.opencontainers.image.upstream.revision")
     source = labels.get("org.opencontainers.image.source")
     license_expression = labels.get("org.opencontainers.image.licenses")
+    source_date_epoch = labels.get("org.opencontainers.image.source-date-epoch")
     if revision != expected_revision:
         raise RuntimeError(
             f"image revision {revision} differs from {expected_revision}"
@@ -199,6 +276,113 @@ def main():
         raise RuntimeError(
             f"image license {license_expression} differs from AGPL-3.0-only"
         )
+    expected_epoch = command(
+        "git", "-C", str(repository), "show", "-s", "--format=%ct", "HEAD"
+    )
+    if source_date_epoch != expected_epoch:
+        raise RuntimeError(
+            f"image source date epoch {source_date_epoch} differs from {expected_epoch}"
+        )
+
+    build_info = json.loads(
+        command(
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--entrypoint",
+            "/opt/venv/bin/python",
+            image_id,
+            "-c",
+            "import json; from app.build_info import BUILD_TIME, SHA1; "
+            "print(json.dumps({'revision': SHA1, 'source_date_epoch': BUILD_TIME}))",
+        )
+    )
+    if build_info != {
+        "revision": expected_revision,
+        "source_date_epoch": expected_epoch,
+    }:
+        raise RuntimeError(
+            f"runtime build provenance differs from OCI labels: {build_info}"
+        )
+
+    scan_script = r"""
+import json
+from pathlib import Path
+import sys
+
+secrets = {
+    name: value.encode()
+    for name, value in json.load(sys.stdin).items()
+    if value
+}
+root = Path('/code')
+if (root / '.owned-provider').exists():
+    raise SystemExit('runtime directory is present in image')
+forbidden_paths = (
+    root / 'tests',
+    root / '.env',
+    root / 'local_data/private-pgp.asc',
+    root / 'local_data/jwtRS256.key',
+    root / 'local_data/dkim.key',
+    root / 'local_data/key.pem',
+    root / 'local_data/test_words.txt',
+)
+present = [str(path) for path in forbidden_paths if path.exists()]
+if present:
+    raise SystemExit('fixture or credential paths are present: ' + ', '.join(present))
+upload_files = [
+    str(path)
+    for path in (root / 'static/upload').rglob('*')
+    if path.is_file() or path.is_symlink()
+]
+if upload_files:
+    raise SystemExit('preloaded upload files are present: ' + ', '.join(upload_files))
+leaks = {}
+overlap = max((len(value) for value in secrets.values()), default=1) - 1
+for path in root.rglob('*'):
+    if not path.is_file() or path.is_symlink():
+        continue
+    previous = b''
+    try:
+        with path.open('rb') as handle:
+            while chunk := handle.read(1024 * 1024):
+                payload = previous + chunk
+                for name, value in secrets.items():
+                    if value in payload:
+                        leaks.setdefault(name, []).append(str(path))
+                previous = payload[-overlap:] if overlap else b''
+    except (OSError, PermissionError):
+        raise SystemExit(f'cannot scan image file: {path}')
+if leaks:
+    print(json.dumps(leaks, sort_keys=True))
+    raise SystemExit(1)
+"""
+    scan = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--interactive",
+            "--entrypoint",
+            "/opt/venv/bin/python",
+            image_id,
+            "-c",
+            scan_script,
+        ],
+        input=json.dumps(secrets),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if scan.returncode:
+        raise RuntimeError(
+            "runtime image contains generated state or a mounted secret value: "
+            f"{scan.stdout.strip()} {scan.stderr.strip()}"
+        )
 
     print(
         json.dumps(
@@ -211,10 +395,14 @@ def main():
                 "hardened_services": hardened,
                 "mail_edge_mounts": mail_edge_mounts,
                 "secrets_absent_from_recent_logs": True,
+                "pii_absent_from_recent_service_logs": True,
                 "image_revision": revision,
                 "image_upstream_revision": upstream_revision,
                 "image_source": source,
                 "image_license": license_expression,
+                "image_source_date_epoch": source_date_epoch,
+                "runtime_build_info_matches_labels": True,
+                "runtime_state_and_secret_values_absent_from_image": True,
             },
             sort_keys=True,
         )

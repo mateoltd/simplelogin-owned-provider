@@ -3,10 +3,10 @@
 This directory is a reusable, production operations overlay for SimpleLogin.
 `UPSTREAM_COMMIT` machine-checks the official upstream pin
 `dbc45fcce4e8e6b4fa615cc729ca95a67bf75266`. The allowlisted fork delta consists
-of this operations overlay plus the provider-neutral `app/mail_edge` host, its
-focused SimpleLogin integration points, migrations, documentation, and tests.
-The host audit rejects changes outside that boundary, keeping upgrades
-replayable.
+of this operations overlay, the provider-neutral `app/mail_edge` host, and the
+reviewed dependency-security migrations for the legacy Flask, authentication,
+crypto, persistence, and mail paths. The host audit rejects changes outside
+that exact boundary, keeping upgrades replayable.
 
 It operates arbitrary operator-owned alias domains and mailboxes through the
 upstream API and mail pipeline. The overlay supplies deployment lifecycle,
@@ -65,6 +65,7 @@ Run the CLI without arguments for the complete command list. Common commands:
 ops/owned-provider/bin/owned-provider status
 ops/owned-provider/bin/owned-provider metrics
 ops/owned-provider/bin/owned-provider probe
+ops/owned-provider/bin/owned-provider socket-gate
 ops/owned-provider/bin/owned-provider reconcile
 ops/owned-provider/bin/owned-provider load 10000
 ops/owned-provider/bin/owned-provider backup /backups/provider.opb

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -15,13 +16,16 @@ import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
-
 EMAIL = re.compile(
     r"(?i)(?<![\w.+-])([\w.!#$%&'*+/=?^`{|}~-]+)@([a-z0-9.-]+\.[a-z]{2,})"
 )
-IP = re.compile(r"(?<![\w:])(?:\d{1,3}\.){3}\d{1,3}(?![\w:])")
+IPV4 = re.compile(r"(?<![\w:])(?:\d{1,3}\.){3}\d{1,3}(?![\w:])")
+IPV6 = re.compile(
+    r"(?<![0-9A-Fa-f:])(?:\[[0-9A-Fa-f:.%]+\]|[0-9A-Fa-f]*:[0-9A-Fa-f:.%]*)(?![0-9A-Fa-f:])"
+)
 AUTH = re.compile(
-    r"(?i)(authorization|authentication|api[_-]?key|password|secret|token)(\s*[:=]\s*)([^\s,;]+)"
+    r"(?i)([\"']?)(authorization|authentication|api[_-]?key|password|secret|token)\1"
+    r"(\s*[:=]\s*)([\"']?)(?:(?:bearer|basic)\s+)?([^\"'\s,;}\]]+)\4"
 )
 LONG_TOKEN = re.compile(r"(?<![A-Za-z0-9])[A-Fa-f0-9]{40,}(?![A-Za-z0-9])")
 
@@ -66,12 +70,57 @@ def secret_values() -> list[str]:
     return sorted(values, key=len, reverse=True)
 
 
+def _redact_ip_candidates(line: str, pattern: re.Pattern[str]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        candidate = match.group(0)
+        unwrapped = candidate[1:-1] if candidate.startswith("[") else candidate
+        address = unwrapped.split("%", 1)[0]
+        try:
+            ipaddress.ip_address(address)
+        except ValueError:
+            return candidate
+        return pseudonym("ip", candidate)
+
+    return pattern.sub(replace, line)
+
+
+def sensitive_kinds(line: str) -> set[str]:
+    """Identify raw PII/auth material that the structured wrapper must remove."""
+    found: set[str] = set()
+    if EMAIL.search(line):
+        found.add("email")
+    for pattern in (IPV4, IPV6):
+        for match in pattern.finditer(line):
+            candidate = match.group(0)
+            unwrapped = candidate[1:-1] if candidate.startswith("[") else candidate
+            try:
+                ipaddress.ip_address(unwrapped.split("%", 1)[0])
+            except ValueError:
+                continue
+            found.add("ip")
+            break
+    for match in AUTH.finditer(line):
+        if match.group(5) not in {"<redacted>", "<secret:redacted>"}:
+            found.add("auth")
+            break
+    if LONG_TOKEN.search(line):
+        found.add("token")
+    return found
+
+
 def redact(line: str, secrets: list[str]) -> str:
     for value in secrets:
         line = line.replace(value, "<secret:redacted>")
-    line = AUTH.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", line)
+    line = AUTH.sub(
+        lambda m: (
+            f"{m.group(1)}{m.group(2)}{m.group(1)}{m.group(3)}"
+            f"{m.group(4)}<redacted>{m.group(4)}"
+        ),
+        line,
+    )
     line = EMAIL.sub(lambda m: pseudonym("email", m.group(0)), line)
-    line = IP.sub(lambda m: pseudonym("ip", m.group(0)), line)
+    line = _redact_ip_candidates(line, IPV4)
+    line = _redact_ip_candidates(line, IPV6)
     return LONG_TOKEN.sub("<token:redacted>", line)
 
 
