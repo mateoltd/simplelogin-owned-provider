@@ -34,6 +34,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /build
 COPY pyproject.toml uv.lock .python-version ./
+COPY ops/owned-provider/scripts/normalize_python_records.py ./normalize_python_records.py
 
 RUN --mount=from=frontend,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/bootstrap-ca.crt,ro \
     test -n "${SOURCE_DATE_EPOCH}" \
@@ -72,6 +73,15 @@ RUN --mount=from=frontend,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/
     && cd /build \
     && uv sync --locked --no-dev --no-install-project --no-managed-python \
         --python "$python_root/bin/python3.12" \
+    && strip --strip-unneeded --remove-section=.note.gnu.build-id \
+        /opt/venv/lib/python3.12/site-packages/newrelic/common/_monotonic.cpython-312-x86_64-linux-gnu.so \
+        /opt/venv/lib/python3.12/site-packages/newrelic/core/_thread_utilization.cpython-312-x86_64-linux-gnu.so \
+        /opt/venv/lib/python3.12/site-packages/newrelic/packages/wrapt/_wrappers.cpython-312-x86_64-linux-gnu.so \
+        /opt/venv/lib/python3.12/site-packages/psycopg2/_psycopg.cpython-312-x86_64-linux-gnu.so \
+    && "$python_root/bin/python3.12" /build/normalize_python_records.py \
+        --site-packages /opt/venv/lib/python3.12/site-packages \
+        /opt/venv/lib/python3.12/site-packages/newrelic-8.8.1.dist-info/RECORD \
+        /opt/venv/lib/python3.12/site-packages/psycopg2-2.9.12.dist-info/RECORD \
     && rm -rf \
         "$python_root/lib/python3.12/idlelib" \
         "$python_root/lib/python3.12/tkinter" \
@@ -180,7 +190,10 @@ RUN test -n "${OWNED_PROVIDER_SOURCE_COMMIT}" \
     && printf 'simplelogin:x:65532:65532:SimpleLogin runtime:/tmp:/usr/sbin/nologin\n' >> /etc/passwd \
     && printf 'simplelogin:x:65532:\n' >> /etc/group \
     && /opt/venv/bin/python -c 'from flanker.addresslib import address; assert callable(address.parse_list)' \
+    && find /opt/venv -type d -name __pycache__ -prune -exec rm -rf {} + \
+    && find /opt/venv -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
     && rm -f \
+        /var/cache/ldconfig/aux-cache \
         /var/log/alternatives.log /var/log/bootstrap.log /var/log/dpkg.log \
         /var/log/faillog /var/log/lastlog /var/log/wtmp /var/log/btmp \
         /var/log/apt/* \
@@ -190,7 +203,9 @@ RUN test -n "${OWNED_PROVIDER_SOURCE_COMMIT}" \
         /root /run /sbin /srv /tmp /usr /var; \
        do \
          if [ -e "$path" ] || [ -L "$path" ]; then \
-           find "$path" -xdev -exec \
+           find "$path" -xdev \
+             ! -path /etc/hosts ! -path /etc/resolv.conf \
+             -exec \
              touch --no-dereference --date="@${SOURCE_DATE_EPOCH}" {} +; \
          fi; \
        done
