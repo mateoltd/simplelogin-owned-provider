@@ -20,16 +20,28 @@ def main():
     repository = args.repository.resolve()
     runtime = args.runtime.resolve()
 
-    expected = (repository / "ops/owned-provider/UPSTREAM_COMMIT").read_text().strip()
+    expected_upstream = (
+        (repository / "ops/owned-provider/UPSTREAM_COMMIT").read_text().strip()
+    )
+    expected_revision = command("git", "-C", str(repository), "rev-parse", "HEAD")
     subprocess.run(
-        ["git", "-C", str(repository), "merge-base", "--is-ancestor", expected, "HEAD"],
+        [
+            "git",
+            "-C",
+            str(repository),
+            "merge-base",
+            "--is-ancestor",
+            expected_upstream,
+            "HEAD",
+        ],
         check=True,
     )
     changed = command(
-        "git", "-C", str(repository), "diff", "--name-only", expected, "--"
+        "git", "-C", str(repository), "diff", "--name-only", expected_upstream, "--"
     ).splitlines()
     exact_host_paths = {
         ".gitignore",
+        "Dockerfile",
         "app/db.py",
         "app/email_utils.py",
         "app/mail_sender.py",
@@ -37,6 +49,10 @@ def main():
         "docs/mail-edge-bridge.md",
         "email_handler.py",
         "simplelogin_app.py",
+        "pyproject.toml",
+        "static/package.json",
+        "templates/footer.html",
+        "templates/header.html",
         "tests/conftest.py",
         "tests/test_email_utils.py",
     }
@@ -162,16 +178,31 @@ def main():
             command("docker", "inspect", "--format", "{{.Image}}", app_id),
         )
     )[0]
-    revision = (
-        image["Config"].get("Labels", {}).get("org.opencontainers.image.revision")
-    )
-    if revision != expected:
-        raise RuntimeError(f"image revision {revision} differs from {expected}")
+    labels = image["Config"].get("Labels", {})
+    revision = labels.get("org.opencontainers.image.revision")
+    upstream_revision = labels.get("org.opencontainers.image.upstream.revision")
+    source = labels.get("org.opencontainers.image.source")
+    license_expression = labels.get("org.opencontainers.image.licenses")
+    if revision != expected_revision:
+        raise RuntimeError(
+            f"image revision {revision} differs from {expected_revision}"
+        )
+    if upstream_revision != expected_upstream:
+        raise RuntimeError(
+            f"image upstream revision {upstream_revision} differs from {expected_upstream}"
+        )
+    expected_source = "https://github.com/mateoltd/simplelogin-owned-provider"
+    if source != expected_source:
+        raise RuntimeError(f"image source {source} differs from {expected_source}")
+    if license_expression != "AGPL-3.0-only":
+        raise RuntimeError(
+            f"image license {license_expression} differs from AGPL-3.0-only"
+        )
 
     print(
         json.dumps(
             {
-                "upstream_commit": expected,
+                "upstream_commit": expected_upstream,
                 "owned_provider_and_mail_edge_diff_allowlisted": True,
                 "secret_files_mode": "0600",
                 "secrets_absent_from_docker_metadata": True,
@@ -180,6 +211,9 @@ def main():
                 "mail_edge_mounts": mail_edge_mounts,
                 "secrets_absent_from_recent_logs": True,
                 "image_revision": revision,
+                "image_upstream_revision": upstream_revision,
+                "image_source": source,
+                "image_license": license_expression,
             },
             sort_keys=True,
         )

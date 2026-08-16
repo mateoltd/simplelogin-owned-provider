@@ -9,8 +9,10 @@ x-app: &app
     args:
       BASE_IMAGE: simplelogin-owned-provider-upstream:${SIMPLELOGIN_UPSTREAM_COMMIT}
     labels:
-      org.opencontainers.image.source: https://github.com/simple-login/app
-      org.opencontainers.image.revision: ${SIMPLELOGIN_UPSTREAM_COMMIT}
+      org.opencontainers.image.licenses: AGPL-3.0-only
+      org.opencontainers.image.source: https://github.com/mateoltd/simplelogin-owned-provider
+      org.opencontainers.image.revision: ${OWNED_PROVIDER_SOURCE_COMMIT:?set by owned-provider}
+      org.opencontainers.image.upstream.revision: ${SIMPLELOGIN_UPSTREAM_COMMIT}
   entrypoint: ["/code/ops/owned-provider/entrypoint.sh"]
   user: "65532:65532"
   read_only: true
@@ -111,8 +113,10 @@ services:
       context: ../..
       dockerfile: Dockerfile
       labels:
-        org.opencontainers.image.source: https://github.com/simple-login/app
-        org.opencontainers.image.revision: ${SIMPLELOGIN_UPSTREAM_COMMIT}
+        org.opencontainers.image.licenses: AGPL-3.0-only
+        org.opencontainers.image.source: https://github.com/mateoltd/simplelogin-owned-provider
+        org.opencontainers.image.revision: ${OWNED_PROVIDER_SOURCE_COMMIT:?set by owned-provider}
+        org.opencontainers.image.upstream.revision: ${SIMPLELOGIN_UPSTREAM_COMMIT}
 
   postgres:
     image: postgres:16.14-alpine3.23@sha256:42b8b8b29c8a4e933d88943e5b03001a78794905cf786e6e7634e9f2abd5a0d3
