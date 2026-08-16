@@ -37,7 +37,11 @@ native ELF inventories, and fails if the recorded inventory differs.
 The server image removes CPython's unused optional `_tkinter` extension because
 the pinned standalone interpreter otherwise carries unresolved Tcl/Tk edges.
 The application has no GUI path, and the native audit rejects any remaining
-unresolved shared-library dependency.
+unresolved shared-library dependency. The build also removes the standalone
+interpreter's bundled `pip`, `ensurepip`, `venv`, headers, configuration tools,
+`2to3`, IDLE, and pydoc helpers. The audit searches every Python package root
+and executable location under `/opt` and the system roots instead of trusting
+`PATH` alone.
 
 ## Copyleft inventory on default paths
 
