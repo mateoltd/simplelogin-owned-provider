@@ -24,8 +24,10 @@ ARG UV_VERSION="0.10.12"
 ARG UV_HASH="ec72570c9d1f33021aa80b176d7baba390de2cfeb1abcbefca346d563bf17484"
 ARG PYTHON_VERSION="3.12.13"
 ARG PYTHON_HASH="c08bc65a81971c1dd5783182826503369466c7e67374d1646519adf05207b684"
+ARG SOURCE_DATE_EPOCH
 
 ENV DEBIAN_FRONTEND=noninteractive \
+    SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_PYTHON_INSTALL_DIR=/opt/uv-python
@@ -34,7 +36,8 @@ WORKDIR /build
 COPY pyproject.toml uv.lock .python-version ./
 
 RUN --mount=from=frontend,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/bootstrap-ca.crt,ro \
-    install -D -m 0644 /tmp/bootstrap-ca.crt /etc/ssl/certs/ca-certificates.crt \
+    test -n "${SOURCE_DATE_EPOCH}" \
+    && install -D -m 0644 /tmp/bootstrap-ca.crt /etc/ssl/certs/ca-certificates.crt \
     && sed -i "s/^deb /deb [snapshot=${UBUNTU_SNAPSHOT}] /" /etc/apt/sources.list \
     && apt-get -o APT::Update::Error-Mode=any update \
     && apt-get install -y --no-install-recommends \
