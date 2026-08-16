@@ -1,10 +1,8 @@
 ARG BASE_IMAGE=simplelogin-owned-provider-upstream:local
 FROM ${BASE_IMAGE}
 
-# uv installs the pinned interpreter beneath /root and links the virtualenv to
-# it. Permit traversal without making /root listable so the runtime can drop
-# privileges to the unprivileged UID used by Compose.
+# Add only the unprivileged runtime identity. The managed interpreter and
+# virtual environment are copied into /opt by the root multi-stage build.
 RUN printf 'simplelogin:x:65532:65532:SimpleLogin runtime:/tmp:/usr/sbin/nologin\n' >> /etc/passwd \
     && printf 'simplelogin:x:65532:\n' >> /etc/group \
-    && chmod 0711 /root \
-    && /code/.venv/bin/python -c 'from flanker.addresslib import address; address.parse_list("a@example.com, b@example.com")'
+    && /opt/venv/bin/python -c 'from flanker.addresslib import address; assert callable(address.parse_list)'

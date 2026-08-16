@@ -9,7 +9,8 @@ compose_file="$script_dir/compose.yml"
 project_name="simplelogin-owned-provider"
 source_commit="$(tr -d '[:space:]' <"$script_dir/UPSTREAM_COMMIT")"
 owned_provider_commit="$(git -C "$repository_root" rev-parse HEAD)"
-image="simplelogin-owned-provider:$source_commit"
+owned_provider_source_epoch="$(git -C "$repository_root" show -s --format=%ct "$owned_provider_commit")"
+image="simplelogin-owned-provider:$owned_provider_commit"
 
 require() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -100,6 +101,7 @@ load_configuration() {
   export OWNED_PROVIDER_RUNTIME_DIR="$runtime_dir"
   export OWNED_PROVIDER_CONFIG_FILE="$config_file"
   export OWNED_PROVIDER_SOURCE_COMMIT="$owned_provider_commit"
+  export OWNED_PROVIDER_SOURCE_DATE_EPOCH="$owned_provider_source_epoch"
   export SIMPLELOGIN_UPSTREAM_COMMIT="$source_commit"
   python3 "$script_dir/scripts/mail_edge_config.py" "$runtime_dir/mail-edge.json"
   if [[ "${OWNED_PROVIDER_MAIL_EDGE_ENABLED:-0}" == "1" ]]; then
@@ -177,12 +179,22 @@ prepare_volumes() {
 }
 
 build_images() {
-  if [[ -n "$(git -C "$repository_root" status --porcelain --untracked-files=normal)" ]]; then
+  local initial_head initial_tree
+  initial_head="$(git -C "$repository_root" rev-parse HEAD)"
+  initial_tree="$(git -C "$repository_root" rev-parse HEAD^{tree})"
+  if [[ "$initial_head" != "$owned_provider_commit" ]] || \
+     [[ -n "$(git -C "$repository_root" status --porcelain --untracked-files=normal)" ]]; then
     printf 'refusing to build: commit or remove source changes so OCI provenance is exact\n' >&2
     return 1
   fi
-  compose --profile build build upstream-image
-  compose build app
+  compose --profile build build --no-cache upstream-image
+  compose build --no-cache app
+  if [[ "$(git -C "$repository_root" rev-parse HEAD)" != "$initial_head" ]] || \
+     [[ "$(git -C "$repository_root" rev-parse HEAD^{tree})" != "$initial_tree" ]] || \
+     [[ -n "$(git -C "$repository_root" status --porcelain --untracked-files=normal)" ]]; then
+    printf 'refusing built artifact: source worktree changed during the OCI build\n' >&2
+    return 1
+  fi
 }
 
 run_migrations() {
@@ -771,6 +783,17 @@ case "${1:-}" in
   metrics) curl --silent --show-error --fail "http://127.0.0.1:${OWNED_PROVIDER_OBSERVER_PORT:-19090}/metrics" ;;
   # @command probe                        Run one alertable API and SMTP synthetic
   probe) compose --profile tools run --rm --no-deps e2e python ops/owned-provider/scripts/synthetic_probe.py ;;
+  # @command socket-gate                  Reject HTTP smuggling, part bombs, and oversized SMTP input
+  socket-gate)
+    if ! is_test_mode; then
+      printf 'the hostile socket gate is restricted to contained test mode\n' >&2
+      exit 1
+    fi
+    python3 "$script_dir/scripts/socket_security_probe.py" \
+      --http-port "${OWNED_PROVIDER_HTTP_PORT:-17777}" \
+      --smtp-port "${OWNED_PROVIDER_SMTP_PORT:-20381}" \
+      --smtp-size-limit "${OWNED_PROVIDER_SMTP_SIZE_LIMIT:-26214400}"
+    ;;
   # @command e2e                          Run real API and mail lifecycle tests
   e2e)
     if ! is_test_mode; then

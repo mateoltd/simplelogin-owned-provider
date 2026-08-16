@@ -1,18 +1,20 @@
 name: simplelogin-owned-provider
 
 x-app: &app
-  image: simplelogin-owned-provider:${SIMPLELOGIN_UPSTREAM_COMMIT:?set by owned-provider}
+  image: simplelogin-owned-provider:${OWNED_PROVIDER_SOURCE_COMMIT:?set by owned-provider}
   platform: linux/amd64
   build:
     context: ../..
     dockerfile: ops/owned-provider/Dockerfile
     args:
-      BASE_IMAGE: simplelogin-owned-provider-upstream:${SIMPLELOGIN_UPSTREAM_COMMIT}
+      BASE_IMAGE: simplelogin-owned-provider-upstream:${OWNED_PROVIDER_SOURCE_COMMIT}
     labels:
       org.opencontainers.image.licenses: AGPL-3.0-only
       org.opencontainers.image.source: https://github.com/mateoltd/simplelogin-owned-provider
+      org.opencontainers.image.upstream.source: https://github.com/simple-login/app
       org.opencontainers.image.revision: ${OWNED_PROVIDER_SOURCE_COMMIT:?set by owned-provider}
       org.opencontainers.image.upstream.revision: ${SIMPLELOGIN_UPSTREAM_COMMIT}
+      org.opencontainers.image.source-date-epoch: ${OWNED_PROVIDER_SOURCE_DATE_EPOCH:?set by owned-provider}
   entrypoint: ["/code/ops/owned-provider/entrypoint.sh"]
   user: "65532:65532"
   read_only: true
@@ -47,7 +49,7 @@ x-app: &app
     DISABLE_REGISTRATION: "1"
     DISABLE_ONBOARDING: "1"
     DISABLE_ALIAS_SUFFIX: "1"
-    WORDS_FILE_PATH: local_data/test_words.txt
+    WORDS_FILE_PATH: local_data/words.txt
     ALIAS_LIMIT: ${OWNED_PROVIDER_ALIAS_LIMIT:-100/day;50/hour;20/minute}
     ALIAS_CREATE_RATE_LIMIT_PAID: ${OWNED_PROVIDER_ALIAS_CREATE_RATE_LIMIT_PAID:-500,60:10000,3600}
     MAX_NB_EMAIL_FREE_PLAN: "5"
@@ -106,17 +108,23 @@ x-app: &app
 
 services:
   upstream-image:
-    image: simplelogin-owned-provider-upstream:${SIMPLELOGIN_UPSTREAM_COMMIT:?set by owned-provider}
+    image: simplelogin-owned-provider-upstream:${OWNED_PROVIDER_SOURCE_COMMIT:?set by owned-provider}
     platform: linux/amd64
     profiles: ["build"]
     build:
       context: ../..
       dockerfile: Dockerfile
+      args:
+        OWNED_PROVIDER_SOURCE_COMMIT: ${OWNED_PROVIDER_SOURCE_COMMIT:?set by owned-provider}
+        SIMPLELOGIN_UPSTREAM_COMMIT: ${SIMPLELOGIN_UPSTREAM_COMMIT:?set by owned-provider}
+        SOURCE_DATE_EPOCH: ${OWNED_PROVIDER_SOURCE_DATE_EPOCH:?set by owned-provider}
       labels:
         org.opencontainers.image.licenses: AGPL-3.0-only
         org.opencontainers.image.source: https://github.com/mateoltd/simplelogin-owned-provider
+        org.opencontainers.image.upstream.source: https://github.com/simple-login/app
         org.opencontainers.image.revision: ${OWNED_PROVIDER_SOURCE_COMMIT:?set by owned-provider}
         org.opencontainers.image.upstream.revision: ${SIMPLELOGIN_UPSTREAM_COMMIT}
+        org.opencontainers.image.source-date-epoch: ${OWNED_PROVIDER_SOURCE_DATE_EPOCH:?set by owned-provider}
 
   postgres:
     image: postgres:16.14-alpine3.23@sha256:42b8b8b29c8a4e933d88943e5b03001a78794905cf786e6e7634e9f2abd5a0d3
