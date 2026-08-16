@@ -76,10 +76,11 @@
 {% block script %}
 
   <script>
-    new Vue({
-      el: '#alias-group',
-      data: {
-        ticket_email: '{{ ticket_email }}'
+    Vue.createApp({
+      data: function () {
+        return {
+          ticket_email: '{{ ticket_email }}'
+        };
       },
       methods: {
         generateRandomAlias: async function (event) {
@@ -97,7 +98,7 @@
           }
         }
       }
-    });
+    }).mount('#alias-group');
 
     $('.custom-file input').change(function (e) {
       let files = [];

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from sqlalchemy import text
 
 from app.db import Session
 from server import create_light_app
@@ -16,10 +17,10 @@ def main():
     args = parser.parse_args()
     with create_light_app().app_context():
         Session.execute(
-            """
+            text("""
             INSERT INTO owned_provider.backup_result(success, size_bytes, sha256)
             VALUES (true, :size, :sha256)
-            """,
+            """),
             {"size": args.size, "sha256": args.sha256},
         )
         Session.commit()

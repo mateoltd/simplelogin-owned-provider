@@ -3,8 +3,6 @@ from datetime import timedelta
 
 import arrow
 import click
-import flask_limiter
-import flask_profiler
 import newrelic.agent
 import sentry_sdk
 import time
@@ -193,7 +191,7 @@ def load_user(alternative_id):
         sentry_sdk.set_user({"email": user.email, "id": user.id})
         if user.disabled:
             return None
-        if not user.is_active():
+        if not user.is_active:
             return None
 
     return user
@@ -207,7 +205,7 @@ def register_blueprints(app: Flask):
     app.register_blueprint(phone_bp)
 
     app.register_blueprint(oauth_bp, url_prefix="/oauth")
-    app.register_blueprint(oauth_bp, url_prefix="/oauth2")
+    app.register_blueprint(oauth_bp, url_prefix="/oauth2", name="oauth2")
     app.register_blueprint(onboarding_bp)
 
     app.register_blueprint(discover_bp)
@@ -416,6 +414,14 @@ def init_extensions(app: Flask):
 
 def create_simplelogin_app():
     app = Flask(__name__)
+
+    # SimpleLogin historically emits absolute redirect locations. Werkzeug 2.1
+    # changed its response default to relative locations; preserve the public
+    # behavior for OAuth and authentication clients.
+    class SimpleLoginResponse(app.response_class):
+        autocorrect_location_header = True
+
+    app.response_class = SimpleLoginResponse
     # SimpleLogin is deployed behind NGINX
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_host=1)
 
@@ -439,7 +445,7 @@ def create_simplelogin_app():
         app.config["SESSION_COOKIE_SECURE"] = True
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     if config.MEM_STORE_URI:
-        app.config[flask_limiter.extension.C.STORAGE_URL] = config.MEM_STORE_URI
+        app.config["RATELIMIT_STORAGE_URI"] = config.MEM_STORE_URI
         initialize_redis_services(app, config.MEM_STORE_URI)
 
     limiter.init_app(app)
@@ -487,6 +493,8 @@ def create_simplelogin_app():
     register_custom_commands(app)
 
     if config.FLASK_PROFILER_PATH:
+        import flask_profiler
+
         LOG.d("Enable flask-profiler")
         app.config["flask_profiler"] = {
             "enabled": True,

@@ -5,10 +5,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from sqlalchemy import text
 
 from app.db import Session
 from server import create_light_app
-
 
 MAIL_EDGE_HOST_TABLES = frozenset(
     {
@@ -21,14 +21,12 @@ MAIL_EDGE_HOST_TABLES = frozenset(
 
 
 def digest_database(*, legacy_pre_mail_edge: bool = False) -> dict:
-    tables = Session.execute(
-        """
+    tables = Session.execute(text("""
         SELECT table_schema, table_name
         FROM information_schema.tables
         WHERE table_type='BASE TABLE' AND table_schema IN ('public', 'owned_provider')
         ORDER BY table_schema, table_name
-        """
-    ).fetchall()
+        """)).fetchall()
     observed_mail_edge_tables = {
         table
         for schema, table in tables
@@ -57,7 +55,7 @@ def digest_database(*, legacy_pre_mail_edge: bool = False) -> dict:
             f'SELECT to_jsonb(row_value)::text FROM "{schema}"."{table}" row_value '
             'ORDER BY (to_jsonb(row_value)::text) COLLATE "C"'
         )
-        result = Session.execute(query)
+        result = Session.execute(text(query))
         while rows := result.fetchmany(1000):
             for (row,) in rows:
                 encoded = (row + "\n").encode()
@@ -72,14 +70,12 @@ def digest_database(*, legacy_pre_mail_edge: bool = False) -> dict:
         canonical = json.dumps(item, sort_keys=True, separators=(",", ":")).encode()
         overall.update(canonical + b"\n")
         table_results.append(item)
-    sequences = Session.execute(
-        """
+    sequences = Session.execute(text("""
         SELECT schemaname, sequencename, coalesce(last_value::text, 'NULL')
         FROM pg_sequences
         WHERE schemaname IN ('public', 'owned_provider')
         ORDER BY schemaname, sequencename
-        """
-    ).fetchall()
+        """)).fetchall()
     sequence_rows = [list(item) for item in sequences]
     overall.update(
         json.dumps(sequence_rows, sort_keys=True, separators=(",", ":")).encode()

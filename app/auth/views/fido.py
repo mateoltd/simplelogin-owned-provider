@@ -1,8 +1,6 @@
 import json
-import secrets
 import uuid
 
-import webauthn
 from flask import (
     request,
     render_template,
@@ -26,6 +24,12 @@ from app.extensions import limiter
 from app.log import LOG
 from app.models import User, Fido, MfaBrowser
 from app.utils import sanitize_next_url
+from app.webauthn_utils import (
+    CredentialOption,
+    authentication_options,
+    new_challenge,
+    verify_authentication,
+)
 
 
 class FidoTokenForm(FlaskForm):
@@ -74,32 +78,32 @@ def fido():
 
     # Handling POST requests
     if fido_token_form.validate_on_submit():
+        challenge = session.pop("fido_challenge", None)
+        if not challenge:
+            flash("Session expired. Please try again.", "warning")
+            g.deduct_limit = True
+            return redirect(url_for("auth.login"))
         try:
             sk_assertion = json.loads(fido_token_form.sk_assertion.data)
         except Exception:
             flash("Key verification failed. Error: Invalid Payload", "warning")
             return redirect(url_for("auth.login"))
 
-        challenge = session["fido_challenge"]
-
         try:
             fido_key = Fido.get_by(
                 uuid=user.fido_uuid, credential_id=sk_assertion["id"]
             )
-            webauthn_user = webauthn.WebAuthnUser(
-                user.fido_uuid,
-                user.email,
-                user.name if user.name else user.email,
-                False,
-                fido_key.credential_id,
-                fido_key.public_key,
-                fido_key.sign_count,
-                RP_ID,
+            if not fido_key:
+                raise ValueError("Unknown WebAuthn credential")
+            new_sign_count = verify_authentication(
+                credential=sk_assertion,
+                challenge=challenge,
+                rp_id=RP_ID,
+                origin=URL,
+                credential_id=fido_key.credential_id,
+                public_key=fido_key.public_key,
+                current_sign_count=fido_key.sign_count,
             )
-            webauthn_assertion_response = webauthn.WebAuthnAssertionResponse(
-                webauthn_user, sk_assertion, challenge, URL, uv_required=False
-            )
-            new_sign_count = webauthn_assertion_response.verify()
         except Exception as e:
             LOG.w(f"An error occurred in WebAuthn verification process: {e}")
             flash("Key verification failed.", "warning")
@@ -107,7 +111,7 @@ def fido():
             g.deduct_limit = True
             auto_activate = False
         else:
-            user.fido_sign_count = new_sign_count
+            fido_key.sign_count = new_sign_count
             Session.commit()
             del session[MFA_USER_ID]
 
@@ -136,39 +140,18 @@ def fido():
 
     # Prepare information for key registration process
     session.pop("challenge", None)
-    challenge = secrets.token_urlsafe(32)
+    challenge = new_challenge()
 
-    session["fido_challenge"] = challenge.rstrip("=")
+    session["fido_challenge"] = challenge
 
     fidos = Fido.filter_by(uuid=user.fido_uuid).all()
-    webauthn_users = []
-    for fido in fidos:
-        webauthn_users.append(
-            webauthn.WebAuthnUser(
-                user.fido_uuid,
-                user.email,
-                user.name if user.name else user.email,
-                False,
-                fido.credential_id,
-                fido.public_key,
-                fido.sign_count,
-                RP_ID,
-            )
-        )
-
-    webauthn_assertion_options = webauthn.WebAuthnAssertionOptions(
-        webauthn_users, challenge
+    webauthn_assertion_options = authentication_options(
+        rp_id=RP_ID,
+        challenge=challenge,
+        credentials=[
+            CredentialOption(fido.credential_id, fido.transports) for fido in fidos
+        ],
     )
-    webauthn_assertion_options = webauthn_assertion_options.assertion_dict
-    # Inject stored transports per credential, falling back to removing the field
-    # if none are stored (keys registered before metadata collection).
-    fido_by_credential_id = {fido.credential_id: fido for fido in fidos}
-    for credential in webauthn_assertion_options.get("allowCredentials", []):
-        fido = fido_by_credential_id.get(credential.get("id"))
-        if fido and isinstance(fido.transports, list) and fido.transports:
-            credential["transports"] = fido.transports
-        else:
-            credential.pop("transports", None)
 
     return render_template(
         "auth/fido.html",

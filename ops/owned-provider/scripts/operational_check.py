@@ -8,6 +8,7 @@ import urllib.error
 import redis
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy import text
 
 from app.db import Session
 from app.models import Alias, Contact, EmailLog, Job, JobState, Mailbox, User
@@ -36,8 +37,10 @@ def main():
     finally:
         redis_client.close()
     with create_light_app().app_context():
-        db_ok = Session.execute("SELECT 1").scalar() == 1
-        current = Session.execute("SELECT version_num FROM alembic_version").scalar()
+        db_ok = Session.execute(text("SELECT 1")).scalar() == 1
+        current = Session.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar()
         expected = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
         result = {
             "http": http_ok,
@@ -53,16 +56,16 @@ def main():
             "contacts": Session.query(Contact).count(),
             "email_logs": Session.query(EmailLog).count(),
             "mail_edge_replay_nonces": Session.execute(
-                "SELECT count(*) FROM mail_edge_replay_nonce"
+                text("SELECT count(*) FROM mail_edge_replay_nonce")
             ).scalar(),
             "mail_edge_callback_receipts": Session.execute(
-                "SELECT count(*) FROM mail_edge_callback_receipt"
+                text("SELECT count(*) FROM mail_edge_callback_receipt")
             ).scalar(),
             "mail_edge_outbound_projections": Session.execute(
-                "SELECT count(*) FROM mail_edge_outbound_projection"
+                text("SELECT count(*) FROM mail_edge_outbound_projection")
             ).scalar(),
             "mail_edge_binding_projections": Session.execute(
-                "SELECT count(*) FROM mail_edge_route_binding_projection"
+                text("SELECT count(*) FROM mail_edge_route_binding_projection")
             ).scalar(),
             "jobs_ready": Session.query(Job)
             .filter(Job.state == JobState.ready.value)

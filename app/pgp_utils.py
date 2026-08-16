@@ -6,9 +6,7 @@ from typing import Union
 import gnupg
 import newrelic.agent
 import pgpy
-from memory_profiler import memory_usage
-from pgpy import PGPMessage
-from sl_pgp import PgpContext, PgpException
+from pgpy import PGPKey, PGPMessage
 
 from app.config import GNUPGHOME, PGP_SENDER_PRIVATE_KEY, USE_RUST_PGP
 from app.log import LOG
@@ -22,10 +20,85 @@ class PGPException(Exception):
     pass
 
 
+class PgpException(Exception):
+    """Normalize errors raised by the in-process OpenPGP implementation."""
+
+
+class PgpContext:
+    """Own parsed OpenPGP keys for one request or mail-processing operation.
+
+    The former optional Rust wheel published binaries without corresponding
+    source or license metadata. PGPy provides the same armored OpenPGP
+    operations from auditable source while preserving context reuse.
+    """
+
+    def __init__(self) -> None:
+        self._public_keys: dict[str, PGPKey] = {}
+        self._signing_key: PGPKey | None = None
+
+    @staticmethod
+    def _parse_key(armored_key: str) -> PGPKey:
+        try:
+            key = PGPKey()
+            key.parse(armored_key)
+            if key.fingerprint is None:
+                raise ValueError("OpenPGP key has no fingerprint")
+            return key
+        except Exception as exc:
+            raise PgpException("invalid OpenPGP key") from exc
+
+    def load_public_key(self, armored_key: str) -> str:
+        key = self._parse_key(armored_key)
+        fingerprint = str(key.fingerprint)
+        self._public_keys[fingerprint] = key
+        return fingerprint
+
+    def load_public_key_and_check(self, armored_key: str) -> str:
+        key = self._parse_key(armored_key)
+        try:
+            key.encrypt(PGPMessage.new(b"test"))
+        except Exception as exc:
+            raise PgpException("OpenPGP key cannot encrypt") from exc
+        fingerprint = str(key.fingerprint)
+        self._public_keys[fingerprint] = key
+        return fingerprint
+
+    def has_public_key(self, fingerprint: str) -> bool:
+        return fingerprint in self._public_keys
+
+    def encrypt(self, data: bytes, fingerprint: str) -> str:
+        try:
+            key = self._public_keys[fingerprint]
+            return str(key.encrypt(PGPMessage.new(data)))
+        except Exception as exc:
+            raise PgpException("OpenPGP encryption failed") from exc
+
+    def encrypt_with_key(self, data: bytes, armored_key: str) -> str:
+        key = self._parse_key(armored_key)
+        try:
+            return str(key.encrypt(PGPMessage.new(data)))
+        except Exception as exc:
+            raise PgpException("OpenPGP encryption failed") from exc
+
+    def set_signing_key(self, armored_key: str) -> None:
+        key = self._parse_key(armored_key)
+        if key.is_public:
+            raise PgpException("OpenPGP signing key is not private")
+        self._signing_key = key
+
+    def sign_detached(self, data: bytes) -> str:
+        if self._signing_key is None:
+            raise PgpException("OpenPGP signing key is not configured")
+        try:
+            return str(self._signing_key.sign(data, detached=True))
+        except Exception as exc:
+            raise PgpException("OpenPGP signing failed") from exc
+
+
 def _get_implementation_name(force_use_rust: bool) -> str:
     """Return the implementation name for metrics."""
     if force_use_rust or USE_RUST_PGP:
-        return "rust"
+        return "pgpy_context"
     return "legacy"
 
 
@@ -148,9 +221,6 @@ def encrypt_file(
             success = True
             return result
         else:
-            mem_usage = memory_usage(-1, interval=1, timeout=1)[0]
-            LOG.d("mem_usage %s", mem_usage)
-
             r = gpg.encrypt_file(data, fingerprint, always_trust=True)
             if not r.ok:
                 # maybe the fingerprint is not loaded on this host, try to load it
@@ -191,14 +261,14 @@ def encrypt_file(
 def encrypt_file_with_pgpy(
     data: bytes, public_key: str, ctx: PgpContext, force_use_rust: bool = False
 ) -> Union[PGPMessage, str]:
-    """Encrypt data using pgpy library or sl-pgp if USE_RUST_PGP is True.
+    """Encrypt data using PGPy, with reusable context when configured.
 
     Returns:
         When USE_RUST_PGP is False: PGPMessage object
         When USE_RUST_PGP is True: str (armored ciphertext)
     """
     if force_use_rust or USE_RUST_PGP:
-        implementation = "rust"
+        implementation = "pgpy_context"
     else:
         implementation = "pgpy"
     success = False
@@ -225,13 +295,13 @@ def encrypt_file_with_pgpy(
         )
 
 
-# Initialize signing key for legacy implementation
+# Initialize signing key for the external GnuPG implementation.
 if PGP_SENDER_PRIVATE_KEY and not USE_RUST_PGP:
     _SIGN_KEY_ID = gpg.import_keys(PGP_SENDER_PRIVATE_KEY).fingerprints[0]
 
 
 def create_pgp_context() -> PgpContext:
-    """Create and configure a PgpContext for use in a request/process.
+    """Create an isolated PGP key context for one request or mail operation.
 
     Returns:
         A configured PgpContext.
@@ -275,8 +345,7 @@ def sign_data(
 def sign_data_with_pgpy(data: Union[str, bytes]) -> str:
     """Sign data using pgpy library.
 
-    Note: This function is legacy-only and is kept for fallback purposes.
-    When USE_RUST_PGP is True, use sign_data() instead.
+    This is the fallback when the configured signing implementation fails.
     """
     success = False
     start_time = time.time()

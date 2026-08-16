@@ -9,7 +9,6 @@ from app.models import User
 
 from app.config import URL, OIDC_CLIENT_ID
 
-
 mock_well_known_response = {
     "authorization_endpoint": "http://localhost:7777/authorization-endpoint",
     "userinfo_endpoint": "http://localhost:7777/userinfo-endpoint",
@@ -429,7 +428,7 @@ def test_oidc_callback_login_with_next_url(
         sess["oauth_state"] = None
 
 
-def test_create_user():
+def test_create_user(flask_client):
     email = random_string()
     user = create_user(
         email,

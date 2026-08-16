@@ -9,21 +9,32 @@ Dockerfile on 2026-08-16 UTC. It is a decision record, not an ignore list. No
 The pre-change Dockerfile installed the default development group. Its real
 image set contained 177 dependencies with 130 advisories in 36 packages. A
 `--no-dev` export contained 142 dependencies with 123 advisories in 32
-packages. The corrected, upgraded runtime export contains 143 dependencies
-with 37 advisories in 8 packages.
+packages. The first corrected runtime export contained 143 dependencies with
+37 advisories in 8 packages. The coordinated migration in this branch contains
+115 runtime dependencies and reports zero known Python advisories. The exact
+production npm lock also reports zero known advisories.
 
 ```sh
-uv export --locked --no-dev --no-emit-project --no-hashes \
+uv export --locked --no-dev --no-emit-project --no-editable --no-hashes \
   --format requirements-txt --output-file /tmp/owned-provider-requirements.txt
 uvx --from 'pip-audit==2.9.0' pip-audit \
   -r /tmp/owned-provider-requirements.txt \
   --no-deps --disable-pip --progress-spinner off --format json
+(cd static && npm audit --package-lock-only)
 ```
 
 `--no-deps` is used only because `uv export` emits the complete locked graph.
-The final command exits nonzero while the six recorded packages remain. The
-older Rye-generated `requirements*.lock` files are not used by the Dockerfile
-or this audit and are not deployment evidence.
+The audit does not ignore or suppress any finding. The older Rye-generated
+`requirements*.lock` files are not used by the Dockerfile or this audit and
+are not deployment evidence.
+
+The client audit additionally found three findings in the base lock: Sentry's
+prototype-pollution gadget, Bootbox's confirmation-dialog XSS, and Vue 2's
+HTML-parser ReDoS. Their browser paths are active. They were migrated to
+`@sentry/browser 10.70.0`, `bootbox 6.0.4`, and `vue 3.5.41`; the final npm
+audit reports zero findings. Sentry is bundled in the pinned frontend stage,
+Vue call sites use the Vue 3 application API, and the build-only bundler is
+pruned before the runtime layer is copied.
 
 ## Removed from the production artifact
 
@@ -34,8 +45,9 @@ or this audit and are not deployment evidence.
 | `tqdm 4.64.0`: PYSEC-2026-1976 | Dev transitive CLI only. Excluded from the image. |
 | `virtualenv 20.21.1`: PYSEC-2024-187, PYSEC-2026-2009 | Pre-commit tooling only. Excluded from the image. |
 
-The same build change excludes GPL `pylint` and `djlint` and LGPL `astroid`.
-The Docker build now also purges `gcc` and `git` after dependency compilation.
+The same build change excludes GPL `pylint` and `djlint`, LGPL `astroid`, and
+the runtime-unused `memory-profiler`. The multi-stage Docker build keeps
+compilers, Git, uv, npm, and other build tooling outside the runtime stage.
 
 ## Upgraded and cleared
 
@@ -53,7 +65,7 @@ from the final audit.
 | `filelock 3.15.4` to `3.20.3` | PYSEC-2026-1374, PYSEC-2026-1375 | Used by tldextract caching. Exploitation required a hostile local process against the private container filesystem. Lock-only upgrade. |
 | `flask-cors 3.0.9` to `6.0.0` | PYSEC-2024-71, PYSEC-2024-271, PYSEC-2026-1383, 1384, 1385 | CORS is active on all `/api/*` routes. Uniform API policy removes path-policy confusion, but header behavior was externally reachable. Direct upgrade with API tests. |
 | `flask-httpauth 4.1.0` to `4.8.1` | PYSEC-2026-2152 | Only reached through Flask-Profiler, which is disabled in the default deployment. Lock-only upgrade. |
-| `gunicorn 20.0.4` to `22.0.0` | PYSEC-2026-1433, PYSEC-2026-1434 | Default public WSGI server behind the operator's reverse proxy. Malformed transfer-encoding forwarding made request smuggling conditionally reachable. Direct upgrade with socket tests. |
+| `gunicorn 20.0.4` to `26.0.0` | PYSEC-2026-1433, PYSEC-2026-1434 | Default public WSGI server behind the operator's reverse proxy. Malformed transfer-encoding forwarding made request smuggling conditionally reachable. Direct upgrade with socket tests. |
 | `httplib2 0.22.0` to `0.32.0` | PYSEC-2026-3444 | Google integration transport. Disabled by default without operator credentials; decompression abuse was possible when enabled. Lock-only upgrade. |
 | `idna 2.10` to `3.15` | PYSEC-2024-60, PYSEC-2026-215 | Parses user and SMTP-controlled domains. SMTP commands are bounded, but authenticated domain input was a possible CPU sink. Coordinated with Requests. |
 | `mako 1.2.4` to `1.3.12` | PYSEC-2026-2617 | Alembic-only templates, repository-controlled paths, Linux deployment. Lock-only upgrade. |
@@ -70,21 +82,31 @@ from the final audit.
 | `urllib3 1.26.20` to `2.7.0` | PYSEC-2026-141, PYSEC-2026-1994, 1996, 1998, 1999 | Active below Requests, Botocore, Sentry, and telemetry. Mail Edge raw downloads already reject encoding and bound bytes, but other peers could trigger decompression work. `newrelic-telemetry-sdk` moved minimally to 0.6.0 to permit the safe urllib3 line. |
 | `webob 1.8.7` to `1.8.10` | PYSEC-2024-188, PYSEC-2026-251 | Flanker imports only `MultiDict`; vulnerable redirect normalization is unused. Lock-only upgrade. |
 
-## Remaining findings and release decision
+## Coordinated closure of the remaining 37 findings
 
-| Package and advisory IDs | Actual reachability and exposure | Why it is not upgraded alone |
-| --- | --- | --- |
-| `cryptography 37.0.1`: PYSEC-2023-254, PYSEC-2023-11, PYSEC-2026-35, 800, 1283, 1285, 2141, 3553, 3554; GHSA-39hc-v87j-747x, GHSA-5cpq-8wj7-hf2v, GHSA-jm77-qphf-c4w8, GHSA-v8gr-m533-ghj9, GHSA-h4gh-qq45-vh27, GHSA-537c-gmf6-5ccf | Active for AES-GCM/AES-SIV, backup encryption, PGP, JWK, and WebAuthn. No PKCS7, PKCS12, `update_into`, modern verifier, non-prime WebAuthn curve, or TLS-server sink was found. Bundled native OpenSSL remains deployed and cannot be declared unreachable. | `cryptography~=37.0.1` excludes all fixes. A safe change must jointly validate PGPy, old WebAuthn/PyOpenSSL, JWCrypto, FIDO, backup, and Mail Edge cryptography. This blocks a public release. |
-| `flask 1.1.2`: PYSEC-2023-62, PYSEC-2026-2151 | Default HTTP runtime. The session access pattern exists; disclosure additionally requires a caching proxy, which default Compose does not provide. | Full fix requires Flask 3.1.3 and coordinated extension-stack modernization. This is part of the public HTTP release blocker. |
-| `ipython 7.31.1`: PYSEC-2023-17 | Imported only by operator `shell.py`; no default Compose service starts it. The advisory is Windows/terminal-title specific while production is Linux. | No deployment exposure. Retained for upstream operator compatibility; remove from the runtime dependency group or move to a supported IPython line during dependency restructuring. |
-| `jinja2 2.11.3`: PYSEC-2026-1471, 1473, 1474, 1475 | Active for repository-controlled templates. No `xmlattr` use exists; sandboxed newsletter source is administrator-only. | Jinja 3.1 must move with Flask and its extensions. No unprivileged advisory sink was found, but the package remains in the blocked stack. |
-| `jwcrypto 0.8`: PYSEC-2024-104, PYSEC-2026-70, PYSEC-2026-827, PYSEC-2026-1484 | OIDC/JWS signing is active. The application does not parse JWE, decompress tokens, auto-detect token types, or invoke the vulnerable verification helpers. | JWCrypto 1.5.7 was tested and rejected during application import because it passes `unsafe_skip_rsa_key_validation`, which cryptography 37 does not support. It must move with the coordinated cryptography upgrade. |
-| `pyopenssl 19.1.0`: PYSEC-2026-2268 | Old WebAuthn X.509 verification is active. No SNI callback is registered, so this advisory's sink is absent. | PyOpenSSL 26 requires the coordinated cryptography/WebAuthn upgrade above. |
-| `setuptools 78.1.1`: PYSEC-2026-3447 | Runtime packaging APIs are not invoked. This advisory is macOS-specific while the production artifact is Ubuntu Linux. | Setuptools 82 and newer remove `pkg_resources`; 83 was tested and made Flask-Limiter 1.5 fail during application import. Clearing it requires the coordinated Flask extension upgrade, not a compatibility shim. |
-| `werkzeug 1.0.1`: PYSEC-2022-203, PYSEC-2023-57, 58, 221, PYSEC-2026-2043, 2044, 2045, 2046, 2320 | Default public HTTP parser. Multipart part-count and long-field denial of service are directly reachable; worker timeouts and memory limits bound but do not eliminate impact. Debugger is off, Windows paths do not apply, and the development-server smuggling report does not describe the Gunicorn path. | Werkzeug cannot safely jump major versions under Flask 1.1.2. Coordinated Flask and extension modernization is required and blocks a public release. |
+These findings were all present at exact base commit
+`7e416296bb968d734b4718cdffa528d2949397f9`. None is classified as unreachable
+in the final artifact; every affected distribution was upgraded or removed
+from the runtime graph.
 
-The security gate therefore has an honest nonzero result: 37 advisories in 8
-packages. A release owner may not reinterpret this matrix as an allowlist. The
-Flask/Werkzeug and cryptography/PyOpenSSL upgrades need dedicated compatibility
-lanes and the same real PostgreSQL, SMTP/socket, OIDC/WebAuthn, backup/restore,
-and Mail Edge verification used here.
+| Distribution | Base findings | Final disposition and exercised runtime path |
+| --- | ---: | --- |
+| `cryptography 37.0.1` | 15 | Upgraded to `50.0.0` with PyOpenSSL 26, WebAuthn 3, JWCrypto 1.5, PGP, backup encryption, JWK, and Mail Edge crypto compatibility migrations. |
+| `Flask 1.1.2` | 2 | Upgraded to `3.1.3`; session cookie, login activity, Flask-Admin, limiter, and blueprint APIs were migrated. |
+| `IPython 7.31.1` | 1 | Removed from the production dependency group. Supported `9.16.1` remains an explicit operator-only extra and is absent from the default OCI install. |
+| `Jinja2 2.11.3` | 4 | Upgraded to `3.1.6` with the Flask template paths retained. |
+| `JWCrypto 0.8` | 4 | Upgraded to `1.5.8`; public JWK export APIs replace private calls and verification explicitly permits only `RS256` JWS objects. |
+| `PyOpenSSL 19.1.0` | 1 | Upgraded to `26.4.0` with WebAuthn 3 registration and assertion verification. |
+| `setuptools 78.1.1` | 1 | Removed from the production export after Flask-Limiter 4 eliminated the old `pkg_resources` dependency. It may exist only in the development environment. |
+| `Werkzeug 1.0.1` | 9 | Upgraded to `3.1.8`; parser and multipart limits remain fail-closed behind Gunicorn and bounded container resources. |
+
+Total before: 37. Total after: 0. The machine-readable post-change result is
+produced by the command above and covers the complete locked runtime export.
+
+The opaque `sl-pgp 0.1.1` wheel was also removed: its public repository
+contains only a placeholder README and provides neither corresponding source
+nor license metadata for the released native binaries. The reusable PGP path
+now uses source-available PGPy, while the default GnuPG path and armored-message
+compatibility remain intact. `psycopg2-binary` was replaced with a source-built
+`psycopg2 2.9.12` extension dynamically linked to the image's inventoried
+`libpq`, so the native closure is visible and reproducible.

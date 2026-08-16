@@ -18,7 +18,7 @@ from app.rate_limiter import set_rate_limit_enabled
 # retain the suite's outer-transaction rollback isolation.
 connection = engine.connect()
 Session.remove()
-Session.configure(bind=connection)
+Session.configure(bind=connection, join_transaction_mode="create_savepoint")
 
 from psycopg2 import errors
 from psycopg2.errorcodes import DEPENDENT_OBJECTS_STILL_EXIST
@@ -39,15 +39,17 @@ app.config["SERVER_NAME"] = "sl.lan"
 # enable pg_trgm extension
 with engine.connect() as conn:
     try:
-        conn.execute("DROP EXTENSION if exists pg_trgm")
-        conn.execute("CREATE EXTENSION pg_trgm")
+        conn.execute(sqlalchemy.text("DROP EXTENSION if exists pg_trgm"))
+        conn.execute(sqlalchemy.text("CREATE EXTENSION pg_trgm"))
     except sqlalchemy.exc.InternalError as e:
         if isinstance(e.orig, errors.lookup(DEPENDENT_OBJECTS_STILL_EXIST)):
             print(">>> pg_trgm can't be dropped, ignore")
-        conn.execute("Rollback")
+        conn.rollback()
 
 add_sl_domains()
 add_proton_partner()
+Session.commit()
+Session.remove()
 
 
 @pytest.fixture
@@ -69,6 +71,10 @@ class CustomTestClient(testing.FlaskClient):
 
 @pytest.fixture
 def flask_client():
+    # SQLAlchemy 2 autobegins on reads. Clear an incomplete transaction left
+    # by a direct model test before opening the upstream client-test boundary.
+    if connection.in_transaction():
+        Session.rollback()
     transaction = connection.begin()
 
     with app.app_context():
@@ -82,7 +88,7 @@ def flask_client():
         finally:
             # disable rate limit again as some tests might enable rate limit
             config.DISABLE_RATE_LIMIT = True
-            # roll back all commits made during a test
-            transaction.rollback()
             Session.rollback()
+            if transaction.is_active:
+                transaction.rollback()
             Session.close()

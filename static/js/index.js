@@ -203,12 +203,13 @@ function handleDisplayNameBlur(aliasId) {
   document.getElementById(`display-name-focus-message-${aliasId}`).classList.add('d-none');
 }
 
-new Vue({
-  el: '#filter-app',
+Vue.createApp({
   delimiters: ["[[", "]]"], // necessary to avoid conflict with jinja
-  data: {
-    showFilter: false,
-    showStats: false
+  data: function () {
+    return {
+      showFilter: false,
+      showStats: false
+    };
   },
   methods: {
     async toggleFilter() {
@@ -230,4 +231,4 @@ new Vue({
     if (store.get("showStats"))
       this.showStats = true;
   }
-});
+}).mount('#filter-app');

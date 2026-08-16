@@ -21,28 +21,31 @@ class Browser(Enum):
     Other = 4
 
 
-def is_mobile() -> bool:
-    return request.user_agent.platform in [
-        "android",
-        "blackberry",
-        "ipad",
-        "iphone",
-        "symbian",
-    ]
+def browser_from_user_agent(user_agent: str) -> Browser:
+    """Classify only browsers for which an extension is offered.
+
+    Werkzeug 3 deliberately stopped parsing user-agent strings. Keep this
+    small decision table local instead of adding a second parser dependency.
+    Mobile agents are excluded even when their strings contain a desktop
+    browser token.
+    """
+    normalized = user_agent.casefold()
+    if any(
+        token in normalized
+        for token in ("android", "blackberry", "ipad", "iphone", "symbian")
+    ):
+        return Browser.Other
+    if "edg/" in normalized or "edge/" in normalized:
+        return Browser.Edge
+    if "firefox/" in normalized or "fxios/" in normalized:
+        return Browser.Firefox
+    if any(token in normalized for token in ("chrome/", "chromium/", "opr/")):
+        return Browser.Chrome
+    return Browser.Other
 
 
 def get_browser() -> Browser:
-    if is_mobile():
-        return Browser.Other
-
-    user_agent = request.user_agent
-    if user_agent.browser == "edge":
-        return Browser.Edge
-    elif user_agent.browser in ["chrome", "opera", "webkit"]:
-        return Browser.Chrome
-    elif user_agent.browser in ["mozilla", "firefox"]:
-        return Browser.Firefox
-    return Browser.Other
+    return browser_from_user_agent(request.headers.get("User-Agent", ""))
 
 
 def get_extension_info() -> Optional[ExtensionInfo]:

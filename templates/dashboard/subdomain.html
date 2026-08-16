@@ -111,12 +111,13 @@
 {% block script %}
 
   <script>
-    new Vue({
-      el: '#new-subdomain',
+    Vue.createApp({
       delimiters: ["[[", "]]"], // necessary to avoid conflict with jinja
-      data: {
-        subdomain: "",
-        domain: "{{ sl_domains[0].domain }}"
+      data: function () {
+        return {
+          subdomain: "",
+          domain: "{{ sl_domains[0].domain }}"
+        };
       },
       computed: {
         toShow: function () {
@@ -126,6 +127,6 @@
           return false;
         }
       }
-    });
+    }).mount('#new-subdomain');
   </script>
 {% endblock %}

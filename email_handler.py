@@ -55,7 +55,6 @@ from aiosmtpd.smtp import Envelope
 from email_validator import validate_email, EmailNotValidError
 from flanker.addresslib import address
 from flanker.addresslib.address import EmailAddress
-from sl_pgp import PgpContext
 from sqlalchemy.exc import IntegrityError
 
 from app import pgp_utils, s3, config, contact_utils
@@ -154,6 +153,7 @@ from app.models import (
 from app.monitor_utils import send_version_event
 from app.pgp_utils import (
     PGPException,
+    PgpContext,
     sign_data_with_pgpy,
     sign_data,
     load_public_key_and_check,
@@ -593,7 +593,7 @@ def handle_forward(envelope, msg: Message, rcpt_to: str) -> List[Tuple[bool, str
 
     user = alias.user
 
-    if not user.is_active():
+    if not user.is_active:
         LOG.w(f"User {user} has been soft deleted")
         return [(False, status.E502)]
 
@@ -1105,7 +1105,7 @@ def handle_reply(
     if not contact:
         LOG.w(f"No contact with {reply_email} as reverse alias")
         return False, status.E502
-    if not contact.user.is_active():
+    if not contact.user.is_active:
         LOG.w(f"User {contact.user} has been soft deleted")
         return False, status.E502
 
@@ -1285,9 +1285,9 @@ def handle_reply(
             )
 
             # replace reverse alias by real address for all contacts
-            for reply_email, website_email in contact_query.values(
+            for reply_email, website_email in contact_query.with_entities(
                 Contact.reply_email, Contact.website_email
-            ):
+            ).all():
                 msg = replace(msg, reply_email, website_email)
 
             elapsed = time.time() - start
@@ -2031,7 +2031,7 @@ def handle_bounce(envelope, email_log: EmailLog, msg: Message) -> str:
         contact,
         alias,
     )
-    if not email_log.user.is_active():
+    if not email_log.user.is_active:
         LOG.d(f"User {email_log.user} is not active")
         return status.E510
 
@@ -2095,7 +2095,7 @@ def send_no_reply_response(rcpt_to: str, mail_from: str, msg: Message):
     if not mailbox:
         LOG.d("Unknown sender. Skipping reply from {}".format(rcpt_to))
         return
-    if not mailbox.user.is_active():
+    if not mailbox.user.is_active:
         LOG.d(f"User {mailbox.user} is soft-deleted. Skipping sending reply response")
         return
     send_email_at_most_times(

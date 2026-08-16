@@ -1,7 +1,5 @@
 import json
-import secrets
 
-import webauthn
 from flask import render_template, flash, redirect, url_for, session, request
 from flask_login import login_required, current_user
 from flask_wtf import FlaskForm
@@ -15,6 +13,12 @@ from app.extensions import limiter
 from app.log import LOG
 from app.models import Fido
 from app.utils import sanitize_next_url
+from app.webauthn_utils import (
+    CredentialOption,
+    authentication_options,
+    new_challenge,
+    verify_authentication,
+)
 
 
 class FidoTokenForm(FlaskForm):
@@ -47,26 +51,9 @@ def enter_admin():
                 url_for("dashboard.enter_admin", next=request.args.get("next"))
             )
 
-        challenge = session.get("admin_fido_challenge")
+        challenge = session.pop("admin_fido_challenge", None)
         if not challenge:
             flash("Session expired. Please try again.", "warning")
-            return redirect(
-                url_for("dashboard.enter_admin", next=request.args.get("next"))
-            )
-
-        authenticator_attachment = sk_assertion.get("authenticatorAttachment")
-        if (
-            ADMIN_FIDO_REQUIRED == "hardware"
-            and authenticator_attachment != "cross-platform"
-        ):
-            LOG.w(
-                f"Admin {current_user} FIDO hardware check failed: authenticatorAttachment=%s",
-                authenticator_attachment,
-            )
-            flash(
-                "Only hardware security keys (e.g. YubiKey) are accepted for admin access.",
-                "warning",
-            )
             return redirect(
                 url_for("dashboard.enter_admin", next=request.args.get("next"))
             )
@@ -76,22 +63,23 @@ def enter_admin():
                 uuid=current_user.fido_uuid, credential_id=sk_assertion["id"]
             )
             if not fido_key:
-                raise Exception("Unknown credential")
-
-            webauthn_user = webauthn.WebAuthnUser(
-                current_user.fido_uuid,
-                current_user.email,
-                current_user.name if current_user.name else current_user.email,
-                False,
-                fido_key.credential_id,
-                fido_key.public_key,
-                fido_key.sign_count,
-                RP_ID,
+                raise ValueError("Unknown WebAuthn credential")
+            authenticator_attachment = sk_assertion.get("authenticatorAttachment")
+            if ADMIN_FIDO_REQUIRED == "hardware" and (
+                authenticator_attachment != "cross-platform"
+                or fido_key.authenticator_attachment not in (None, "cross-platform")
+            ):
+                raise ValueError("Credential is not a cross-platform security key")
+            new_sign_count = verify_authentication(
+                credential=sk_assertion,
+                challenge=challenge,
+                rp_id=RP_ID,
+                origin=URL,
+                credential_id=fido_key.credential_id,
+                public_key=fido_key.public_key,
+                current_sign_count=fido_key.sign_count,
+                require_user_verification=True,
             )
-            webauthn_assertion_response = webauthn.WebAuthnAssertionResponse(
-                webauthn_user, sk_assertion, challenge, URL, uv_required=False
-            )
-            new_sign_count = webauthn_assertion_response.verify()
         except Exception as e:
             LOG.w(f"Admin {current_user} FIDO verification failed: %s", e)
             flash("Key verification failed.", "warning")
@@ -113,36 +101,19 @@ def enter_admin():
 
     # Prepare FIDO challenge
     session.pop("admin_fido_challenge", None)
-    challenge = secrets.token_urlsafe(32)
-    session["admin_fido_challenge"] = challenge.rstrip("=")
+    challenge = new_challenge()
+    session["admin_fido_challenge"] = challenge
 
     fidos = Fido.filter_by(uuid=current_user.fido_uuid).all()
-    webauthn_users = [
-        webauthn.WebAuthnUser(
-            current_user.fido_uuid,
-            current_user.email,
-            current_user.name if current_user.name else current_user.email,
-            False,
-            fido.credential_id,
-            fido.public_key,
-            fido.sign_count,
-            RP_ID,
-        )
-        for fido in fidos
-    ]
-
-    webauthn_assertion_options = webauthn.WebAuthnAssertionOptions(
-        webauthn_users, challenge, userVerification="required"
-    ).assertion_dict
-    if ADMIN_FIDO_REQUIRED == "hardware":
-        webauthn_assertion_options["extensions"] = {"uvm": True}
-        webauthn_assertion_options["hints"] = ["security-key", "client-device"]
-        try:
-            for credential in webauthn_assertion_options["allowCredentials"]:
-                if "transports" in credential:
-                    credential["transports"] = ["usb", "nfc"]
-        except KeyError:
-            pass
+    webauthn_assertion_options = authentication_options(
+        rp_id=RP_ID,
+        challenge=challenge,
+        credentials=[
+            CredentialOption(fido.credential_id, fido.transports) for fido in fidos
+        ],
+        require_user_verification=True,
+        hardware_hint=ADMIN_FIDO_REQUIRED == "hardware",
+    )
 
     return render_template(
         "dashboard/enter_admin.html",

@@ -271,7 +271,7 @@
             {% endif %}
             {% if user.enable_otp or user.fido_uuid %}
 
-              <form action="{{ url_for('admin.email_search.disable_2fa') }}"
+              <form action="{{ url_for('email_search.disable_2fa') }}"
                     method="POST"
                     class="mb-2">
                 <input type="hidden" name="user_id" value="{{ user.id }}">
@@ -292,7 +292,7 @@
             {% endif %}
             {% if user.delete_on %}
 
-              <form action="{{ url_for('admin.email_search.stop_user_deletion') }}"
+              <form action="{{ url_for('email_search.stop_user_deletion') }}"
                     method="POST"
                     class="mb-2">
                 <input type="hidden" name="user_id" value="{{ user.id }}">
@@ -387,7 +387,7 @@
             <span aria-hidden="true">&times;</span>
           </button>
         </div>
-        <form action="{{ url_for('admin.email_search.mark_abuser') }}"
+        <form action="{{ url_for('email_search.mark_abuser') }}"
               method="POST">
           <div class="modal-body">
             <input type="hidden" name="user_id" value="{{ user.id }}">
@@ -435,7 +435,7 @@
             <span aria-hidden="true">&times;</span>
           </button>
         </div>
-        <form action="{{ url_for('admin.email_search.unmark_abuser') }}"
+        <form action="{{ url_for('email_search.unmark_abuser') }}"
               method="POST">
           <div class="modal-body">
             <input type="hidden" name="user_id" value="{{ user.id }}">
@@ -484,7 +484,7 @@
               <span aria-hidden="true">&times;</span>
             </button>
           </div>
-          <form action="{{ url_for('admin.email_search.delete_partner_link') }}"
+          <form action="{{ url_for('email_search.delete_partner_link') }}"
                 method="POST"
                 id="unlinkProtonForm{{ user.id }}">
             <div class="modal-body">
@@ -554,7 +554,7 @@
             <span aria-hidden="true">&times;</span>
           </button>
         </div>
-        <form action="{{ url_for('admin.email_search.delete_user') }}"
+        <form action="{{ url_for('email_search.delete_user') }}"
               method="POST"
               id="deleteUserForm{{ user.id }}">
           <div class="modal-body">
@@ -622,7 +622,7 @@
             <span>&times;</span>
           </button>
         </div>
-        <form action="{{ url_for('admin.email_search.update_subdomain_quota') }}"
+        <form action="{{ url_for('email_search.update_subdomain_quota') }}"
               method="POST"
               id="subdomainQuotaForm{{ user.id }}">
           <div class="modal-body">
@@ -658,7 +658,7 @@
             <span>&times;</span>
           </button>
         </div>
-        <form action="{{ url_for('admin.email_search.update_directory_quota') }}"
+        <form action="{{ url_for('email_search.update_directory_quota') }}"
               method="POST"
               id="directoryQuotaForm{{ user.id }}">
           <div class="modal-body">
@@ -739,7 +739,7 @@
               <span aria-hidden="true">&times;</span>
             </button>
           </div>
-          <form action="{{ url_for('admin.email_search.toggle_alias_status') }}"
+          <form action="{{ url_for('email_search.toggle_alias_status') }}"
                 method="POST"
                 id="disableAliasForm{{ alias.id }}">
             <div class="modal-body">
@@ -802,7 +802,7 @@
               <span aria-hidden="true">&times;</span>
             </button>
           </div>
-          <form action="{{ url_for('admin.email_search.toggle_alias_status') }}"
+          <form action="{{ url_for('email_search.toggle_alias_status') }}"
                 method="POST"
                 id="enableAliasForm{{ alias.id }}">
             <div class="modal-body">
@@ -864,7 +864,7 @@
             <span aria-hidden="true">&times;</span>
           </button>
         </div>
-        <form action="{{ url_for('admin.email_search.delete_alias') }}"
+        <form action="{{ url_for('email_search.delete_alias') }}"
               method="POST"
               id="deleteAliasForm{{ alias.id }}">
           <div class="modal-body">
@@ -1037,7 +1037,7 @@
     <div class="card-body">
       <div class="row">
         <div class="col-md-6 mb-3">
-          <form action="{{ url_for('admin.email_search.update_subdomain_quota') }}"
+          <form action="{{ url_for('email_search.update_subdomain_quota') }}"
                 method="POST">
             <input type="hidden" name="user_id" value="{{ user.id }}">
             <label class="font-weight-bold">Subdomain Quota</label>
@@ -1060,7 +1060,7 @@
           </form>
         </div>
         <div class="col-md-6 mb-3">
-          <form action="{{ url_for('admin.email_search.update_directory_quota') }}"
+          <form action="{{ url_for('email_search.update_directory_quota') }}"
                 method="POST">
             <input type="hidden" name="user_id" value="{{ user.id }}">
             <label class="font-weight-bold">Directory Quota</label>
@@ -1216,7 +1216,7 @@
                           <span aria-hidden="true">&times;</span>
                         </button>
                       </div>
-                      <form action="{{ url_for('admin.email_search.set_default_mailbox') }}"
+                      <form action="{{ url_for('email_search.set_default_mailbox') }}"
                             method="POST">
                         <div class="modal-body">
                           <input type="hidden" name="mailbox_id" value="{{ mailbox.id }}">
@@ -1260,7 +1260,7 @@
                           <span aria-hidden="true">&times;</span>
                         </button>
                       </div>
-                      <form action="{{ url_for('admin.email_search.admin_reenable_mailbox') }}"
+                      <form action="{{ url_for('email_search.admin_reenable_mailbox') }}"
                             method="POST">
                         <div class="modal-body">
                           <input type="hidden" name="mailbox_id" value="{{ mailbox.id }}">
@@ -1311,7 +1311,7 @@
                           <span aria-hidden="true">&times;</span>
                         </button>
                       </div>
-                      <form action="{{ url_for('admin.email_search.send_mailbox_disable_warning') }}"
+                      <form action="{{ url_for('email_search.send_mailbox_disable_warning') }}"
                             method="POST">
                         <div class="modal-body">
                           <input type="hidden" name="mailbox_id" value="{{ mailbox.id }}">
@@ -1360,7 +1360,7 @@
                           <span aria-hidden="true">&times;</span>
                         </button>
                       </div>
-                      <form action="{{ url_for('admin.email_search.admin_disable_mailbox') }}"
+                      <form action="{{ url_for('email_search.admin_disable_mailbox') }}"
                             method="POST">
                         <div class="modal-body">
                           <input type="hidden" name="mailbox_id" value="{{ mailbox.id }}">
@@ -1794,7 +1794,7 @@
                     <code>{{ domain.id }}</code>
                   </td>
                   <td>
-                    <a href="{{ url_for('admin.custom_domain_search.index', query=domain.domain) }}">{{ domain.domain }}</a>{{ copy_btn(domain.domain) }}
+                    <a href="{{ url_for('custom_domain_search.index', query=domain.domain) }}">{{ domain.domain }}</a>{{ copy_btn(domain.domain) }}
                   </td>
                   <td>
                     {% if domain.verified and domain.ownership_verified %}
