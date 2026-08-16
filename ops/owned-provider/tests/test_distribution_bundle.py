@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import sys
@@ -315,6 +316,11 @@ def test_source_archive_rejects_path_traversal() -> None:
         validate_source_archive("sources/bad.tar", payload)
 
 
+def test_posix_tar_member_may_contain_a_literal_backslash() -> None:
+    payload = source_tar({r"source/dev-mapper\x2dswap.swap": b"fixture"})
+    validate_source_archive("sources/systemd.tar", payload)
+
+
 def test_source_archive_rejects_escaping_symlink() -> None:
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w") as archive:
@@ -346,6 +352,14 @@ placeholder
             "sources/native-library.dsc",
             payload.replace(b"-----BEGIN PGP SIGNATURE-----", b"signature"),
         )
+
+
+def test_debian_legacy_source_diff_is_bounded_and_validated() -> None:
+    payload = gzip.compress(b"--- old/file\n+++ new/file\n@@ -1 +1 @@\n-old\n+new\n")
+    validate_source_archive("sources/package.diff.gz", payload)
+
+    with pytest.raises(ComplianceError, match="no unified patch"):
+        validate_source_archive("sources/package.diff.gz", gzip.compress(b"notes\n"))
 
 
 def test_missing_or_changed_source_fails_closed(

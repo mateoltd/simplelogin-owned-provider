@@ -9,6 +9,7 @@ remain pure and unit-testable.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import io
 import ipaddress
@@ -136,8 +137,10 @@ def validate_url(value: str, *, field_name: str) -> str:
     return value
 
 
-def _archive_member_path(name: str, *, archive: str) -> PurePosixPath:
-    if "\\" in name or any(
+def _archive_member_path(
+    name: str, *, archive: str, allow_posix_backslash: bool = False
+) -> PurePosixPath:
+    if ("\\" in name and not allow_posix_backslash) or any(
         ord(character) < 32 or ord(character) == 127 for character in name
     ):
         raise ComplianceError(f"unsafe path in {archive}: {name!r}")
@@ -181,6 +184,19 @@ def validate_source_archive(path: str, payload: bytes) -> None:
                 f"Debian source control file is not clear-signed: {path}"
             )
         return
+    if lower.endswith(".diff.gz"):
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(payload)) as archive:
+                patch = archive.read(MAX_BUNDLE_FILE_BYTES + 1)
+        except (gzip.BadGzipFile, OSError, EOFError) as error:
+            raise ComplianceError(
+                f"invalid Debian source diff {path}: {error}"
+            ) from error
+        if len(patch) > MAX_BUNDLE_FILE_BYTES:
+            raise ComplianceError(f"Debian source diff exceeds its byte limit: {path}")
+        if not patch.strip() or b"--- " not in patch or b"+++ " not in patch:
+            raise ComplianceError(f"Debian source diff has no unified patch: {path}")
+        return
     if lower.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz")):
         try:
             with tarfile.open(fileobj=io.BytesIO(payload), mode="r:*") as archive:
@@ -191,7 +207,9 @@ def validate_source_archive(path: str, payload: bytes) -> None:
                         raise ComplianceError(
                             f"source archive has too many members: {path}"
                         )
-                    member_path = _archive_member_path(member.name, archive=path)
+                    member_path = _archive_member_path(
+                        member.name, archive=path, allow_posix_backslash=True
+                    )
                     if member.issym() or member.islnk():
                         target = PurePosixPath(member.linkname)
                         if target.is_absolute():

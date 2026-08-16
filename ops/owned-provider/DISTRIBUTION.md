@@ -56,7 +56,7 @@ trusting `PATH` alone, and rejects any unresolved shared-library dependency.
 | GNU `tar` | GPL | Remains in the final image and is invoked by backup/export and restore. | Include its license and matching Ubuntu source when the image is conveyed. |
 | `psycopg2 2.9.12` | LGPL-3.0-or-later with OpenSSL exception | Core PostgreSQL client for every stateful service, built from source and dynamically linked to the inventoried Ubuntu `libpq`. | Include its exact source and license, trace every native dependency, and preserve dynamic replacement rights. |
 | `jwcrypto 1.5.8` | LGPL-3.0-or-later | Active OIDC/JWS runtime. | Retain its license/source and LGPL replacement/relinking rights. |
-| `chardet 7.6.0` | LGPL | Runtime transitive dependency used by mail/address parsing. | Add the upstream license and source to a conveyed artifact's notices/source set. |
+| `certifi 2026.7.22` | MPL-2.0 | Runtime CA bundle used on outbound TLS paths. | Include its exact license and source in the conveyed artifact's notices/source set. |
 | `crontab 0.22.8` | LGPL | Packaged through yacron, but no yacron service runs by default. | Still include license/source if conveying the image because the bytes are present. |
 | Ubuntu `libc6` | LGPL | Loaded by all image processes. | Retain notices and include the exact source selected by the pinned Ubuntu snapshot. |
 | `tld 0.13.2` | GPL/LGPL/MPL tri-license | Runtime mail/domain parsing dependency. | Select and record the MPL option for a conveyed build and retain its notice/source. |
