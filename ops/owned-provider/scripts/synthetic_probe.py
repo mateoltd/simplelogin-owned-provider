@@ -10,10 +10,10 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from sqlalchemy import text
 
 from app.db import Session
 from server import create_light_app
-
 
 BASE = os.environ.get("OWNED_PROVIDER_BASE_URL", "http://app:7777").rstrip("/")
 PASSWORD = Path(os.environ["ADMIN_PASSWORD_FILE"]).read_text().strip()
@@ -42,22 +42,20 @@ def api(method, path, body=None, api_key=None, expected=(200,)):
 def record(success: bool, latency_ms: float, detail: dict):
     with create_light_app().app_context():
         Session.execute(
-            """
+            text("""
             INSERT INTO owned_provider.probe_result(probe_name, success, latency_ms, detail)
             VALUES ('api-smtp', :success, :latency_ms, CAST(:detail AS jsonb))
-            """,
+            """),
             {
                 "success": success,
                 "latency_ms": latency_ms,
                 "detail": json.dumps(detail, sort_keys=True),
             },
         )
-        Session.execute(
-            """
+        Session.execute(text("""
             DELETE FROM owned_provider.probe_result
             WHERE checked_at < clock_timestamp() - interval '30 days'
-            """
-        )
+            """))
         Session.commit()
 
 

@@ -45,8 +45,8 @@ class TestEncryptWithPgp:
         result = email_handler.MailHandler()._handle(envelope, msg)
         assert result is not None
 
-    def test_encrypt_with_pgp_rust(self, ctx):
-        """Test PGP encryption using Rust sl-pgp implementation."""
+    def test_encrypt_with_pgp_context(self, ctx):
+        """Test PGP encryption using the reusable PGPy context."""
         user = create_new_user()
         pgp_public_key = open(get_abs_path("local_data/public-pgp.asc")).read()
         mailbox = user.default_mailbox

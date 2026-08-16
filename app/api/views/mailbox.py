@@ -81,7 +81,7 @@ def delete_mailbox(mailbox_id):
             400,
         )
 
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     transfer_mailbox_id = data.get("transfer_aliases_to")
     if transfer_mailbox_id and int(transfer_mailbox_id) >= 0:
         transfer_mailbox_id = int(transfer_mailbox_id)

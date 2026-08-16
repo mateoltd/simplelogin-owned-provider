@@ -183,17 +183,18 @@
     introJs().start();
   }
 </script>
-<script src="{{ url_for('static', filename='node_modules/vue/dist/vue.min.js') }}"></script>
+<script src="{{ url_for('static', filename='node_modules/vue/dist/vue.global.prod.js') }}"></script>
 <script>
-  var app = new Vue({
-    el: '#notification-app',
+  var app = Vue.createApp({
     delimiters: ["[[", "]]"], // necessary to avoid conflict with jinja
-    data: {
-      notifications: [],
-      page: 0,
-      loading: true,
-      canLoadMore: false,
-      showNotification: false,
+    data: function () {
+      return {
+        notifications: [],
+        page: 0,
+        loading: true,
+        canLoadMore: false,
+        showNotification: false,
+      };
     },
     computed: {
       has_non_read_notification: function () {
@@ -257,5 +258,5 @@
           that.showNotification = true;
       }
     }
-  })
+  }).mount('#notification-app')
 </script>

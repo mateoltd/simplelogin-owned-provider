@@ -12,10 +12,10 @@ from email.message import EmailMessage
 from pathlib import Path
 
 import redis
+from sqlalchemy import text
 
 from app.db import Session
 from server import create_light_app
-
 
 UPLOAD_ROOT = Path("/code/static/upload")
 UNSENT_ROOT = Path("/code/var/unsent")
@@ -32,11 +32,11 @@ def message_exists(subject: str) -> bool:
 
 def put(redis_client: redis.Redis, marker: str, phase: str):
     Session.execute(
-        """
+        text("""
         INSERT INTO owned_provider.restore_marker(marker, phase)
         VALUES (:marker, :phase)
         ON CONFLICT (marker) DO UPDATE SET phase=excluded.phase, created_at=clock_timestamp()
-        """,
+        """),
         {"marker": marker, "phase": phase},
     )
     Session.commit()
@@ -62,7 +62,7 @@ def put(redis_client: redis.Redis, marker: str, phase: str):
 def exists(redis_client: redis.Redis, marker: str) -> dict:
     database = bool(
         Session.execute(
-            "SELECT 1 FROM owned_provider.restore_marker WHERE marker=:marker",
+            text("SELECT 1 FROM owned_provider.restore_marker WHERE marker=:marker"),
             {"marker": marker},
         ).scalar()
     )

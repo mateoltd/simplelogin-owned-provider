@@ -12,31 +12,28 @@ include = ["templates/*", "templates/**/*", "local_data/*.txt"]
 requires-python = "~=3.12.0"
 
 dependencies = [
-  "flask ~= 1.1.2",
-  "flask_login ~= 0.5.0",
-  "wtforms ~= 2.3.3",
+  "flask ~= 3.1.3",
+  "flask_login ~= 0.6.3",
+  "wtforms ~= 3.2.2",
   "unidecode ~= 1.1.1",
-  "gunicorn ~= 22.0.0",
+  "gunicorn ~= 26.0.0",
   "bcrypt ~= 3.2.0",
+  "cachetools ~= 7.1.7",
   "python-dotenv ~= 1.2.2",
-  "ipython ~= 7.31.1",
-  "sqlalchemy_utils ~= 0.36.8",
-  "psycopg2-binary ~= 2.9.10",
+  "sqlalchemy_utils ~= 0.42.1",
+  "psycopg2 ~= 2.9.10",
   "sentry_sdk ~= 2.20.0",
   "blinker ~= 1.9.0",
   "arrow ~= 0.16.0",
-  "Flask-WTF ~= 0.14.3",
+  "Flask-WTF ~= 1.3.0",
   "boto3 ~= 1.35.37",
-  "Flask-Migrate ~= 2.5.3",
-  "flask_admin ~= 1.5.6",
+  "flask_admin ~= 2.2.0",
   "flask-cors ~= 6.0.0",
   "watchtower ~= 0.8.0",
-  "sqlalchemy-utils == 0.36.8",
-  "jwcrypto ~= 0.8",
+  "jwcrypto ~= 1.5.8",
   "yacron~=0.19.0",
-  "flask-debugtoolbar ~= 0.11.0",
-  "requests_oauthlib ~= 1.3.0",
-  "pyopenssl ~= 19.1.0",
+  "requests_oauthlib ~= 2.0.0",
+  "pyopenssl ~= 26.4.0",
   "aiosmtpd ~= 1.2",
   "dnspython ~= 2.7.0",
   "coloredlogs ~= 14.0",
@@ -44,44 +41,48 @@ dependencies = [
   "phpserialize ~= 1.3",
   "dkimpy == 1.0.5",
   "pyotp ~= 2.4.0",
-  "flask_profiler ~= 1.8.1",
   "facebook-sdk ~= 3.1.0",
-  "google-api-python-client ~= 1.12.3",
-  "google-auth-httplib2 ~= 0.0.4",
-  "python-gnupg ~= 0.4.6",
-  "webauthn ~= 0.4.7",
+  "google-api-python-client ~= 2.198.0",
+  "google-auth-httplib2 ~= 0.4.1",
+  "python-gnupg ~= 0.5.6",
+  "webauthn ~= 3.0.0",
 
   # Git dependency until pyspf creates a new release
   #"pyspf @ git+https://github.com/sdgathman/pyspf.git@665a6df079485a9824be0829e7d71088453db7f6",
   "pyspf ~= 2.0.14",
 
-  "Flask-Limiter == 1.5",
-  "memory_profiler ~= 0.57.0",
+  "Flask-Limiter ~= 4.1.1",
   "gevent ~= 24.11.1",
   "email-validator ~= 2.2.0",
-  "PGPy == 0.5.4",
+  "PGPy ~= 0.6.0",
   "coinbase-commerce ~= 1.0.1",
   "requests ~= 2.33.0",
   "newrelic ~= 8.8.0",
   "flanker ~= 0.9.11",
   "pyre2 ~= 0.3.6",
   "tldextract ~= 3.1.2",
-  "flask-debugtoolbar-sqlalchemy ~= 0.2.0",
   "twilio ~= 7.3.2",
   "Deprecated ~= 1.2.13",
-  "MarkupSafe~=1.1.1",
-  "cryptography ~= 37.0.1",
-  "SQLAlchemy ~= 1.3.24",
+  "MarkupSafe ~= 3.0.3",
+  "cryptography ~= 50.0.0",
+  "SQLAlchemy ~= 2.0.52",
   "redis==5.2.1",
   "newrelic-telemetry-sdk ~= 0.6.0",
   "aiospamc == 0.10",
-  "itsdangerous ~= 1.1.0",
-  "werkzeug ~= 1.0.1",
-  "alembic ~= 1.4.3",
-  "limits ~= 4.0.1",
+  "itsdangerous ~= 2.2.0",
+  "werkzeug ~= 3.1.8",
+  "alembic ~= 1.19.1",
+  "limits ~= 5.8.0",
   "strictyaml ~= 1.7.3",
 
-  "sl-pgp",
+]
+
+[project.optional-dependencies]
+operator = [
+  "Flask-Migrate ~= 4.1.0",
+  "flask-debugtoolbar ~= 0.16.0",
+  "flask_profiler ~= 1.8.1",
+  "ipython ~= 9.16.1",
 ]
 
 [tool.black]
@@ -108,7 +109,7 @@ exclude = '''
 [tool.ruff]
 exclude = [".venv", "migrations", "app/events/generated"]
 [tool.ruff.lint]
-ignore-init-module-imports = true
+select = ["E4", "E7", "E9", "F"]
 
 [tool.djlint]
 indent = 2
@@ -129,21 +130,16 @@ blank_line_after_tag = "if,for,include,load,extends,block,endcall"
 # T001: Variables should be wrapped in a single whitespace. | Messes up with comments
 ignore = "H006,H013,H016,H017,H019,H021,H025,H030,H031,T003,J004,J018,T001"
 
-[tool.uv]
-# Declare sl-pgp-rs dependency link so uv can find it
-find-links = [
-  "https://github.com/simple-login/sl-pgp-rs/releases/download/0.1.1/index.html",
-]
-
 [dependency-groups]
 dev = [
-  "pytest ~= 7.0.0",
-  "pytest-cov ~= 3.0.0",
-  "pre-commit ~= 4.1.0",
-  "black ~= 22.1.0",
+  "pytest ~= 9.1.1",
+  "pytest-cov ~= 7.1.0",
+  "pre-commit ~= 4.6.1",
+  "black ~= 26.5.1",
   "djlint==1.35.3",
   "pylint ~= 2.14.4",
-  "ruff ~= 0.1.5",
+  "ruff ~= 0.16.0",
+  "psutil ~= 7.2.2",
 ]
 
 [build-system]

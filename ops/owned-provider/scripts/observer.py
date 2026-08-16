@@ -14,11 +14,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import redis
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy import text
 
 from app.db import Session
 from app.models import JobState
 from server import create_light_app
-
 
 APP = create_light_app()
 STARTED = time.monotonic()
@@ -28,7 +28,7 @@ UPSTREAM = (
 
 
 def scalar(sql: str, params=None):
-    return Session.execute(sql, params or {}).scalar()
+    return Session.execute(text(sql), params or {}).scalar()
 
 
 def collect() -> dict:
@@ -124,26 +124,22 @@ def collect() -> dict:
                 )
                 or 0
             )
-            probe = Session.execute(
-                """
+            probe = Session.execute(text("""
                 SELECT success, extract(epoch FROM clock_timestamp() - checked_at)
                 FROM owned_provider.probe_result
                 WHERE probe_name='api-smtp'
                 ORDER BY checked_at DESC LIMIT 1
-                """
-            ).first()
+                """)).first()
             if probe:
                 result["synthetic"] = {
                     "success": bool(probe[0]),
                     "age_seconds": max(0.0, float(probe[1])),
                 }
-            backup = Session.execute(
-                """
+            backup = Session.execute(text("""
                 SELECT success, extract(epoch FROM clock_timestamp() - completed_at), size_bytes
                 FROM owned_provider.backup_result
                 ORDER BY completed_at DESC LIMIT 1
-                """
-            ).first()
+                """)).first()
             if backup:
                 result["backup"] = {
                     "success": bool(backup[0]),

@@ -65,12 +65,13 @@
 {% block script %}
 
   <script>
-    var app = new Vue({
-      el: '#message-app',
+    var app = Vue.createApp({
       delimiters: ["[[", "]]"], // necessary to avoid conflict with jinja
-      data: {
-        messages: [],
-        loading: true,
+      data: function () {
+        return {
+          messages: [],
+          loading: true,
+        };
       },
       async mounted() {
         await this.loadMessage();
@@ -101,6 +102,6 @@
           }
         }
       }
-    })
+    }).mount('#message-app')
   </script>
 {% endblock %}

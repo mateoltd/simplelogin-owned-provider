@@ -114,8 +114,8 @@ def random_email() -> str:
 
 
 def fix_rate_limit_after_request():
-    from flask import g
-    from app.extensions import limiter
+    """Compatibility no-op for tests that predate Flask-Limiter 4.
 
-    g._rate_limiting_complete = False
-    setattr(g, "%s_rate_limiting_complete" % limiter._key_prefix, False)
+    Modern Flask-Limiter performs request bookkeeping on the request context, so
+    no private extension state needs to be cleared between test-client requests.
+    """

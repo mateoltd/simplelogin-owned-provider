@@ -181,9 +181,11 @@ def delete_mailbox(
         name=JobType.DELETE_MAILBOX.value,
         payload={
             "mailbox_id": mailbox.id,
-            "transfer_mailbox_id": transfer_mailbox_id
-            if transfer_mailbox_id and transfer_mailbox_id > 0
-            else None,
+            "transfer_mailbox_id": (
+                transfer_mailbox_id
+                if transfer_mailbox_id and transfer_mailbox_id > 0
+                else None
+            ),
             "send_mail": send_mail,
         },
         run_at=arrow.now(),
@@ -538,8 +540,10 @@ def count_mailbox_aliases(mailbox: Mailbox) -> int:
         if not am.alias.is_trashed():
             alias_ids.add(am.alias_id)
 
-    for alias in Alias.filter_by(mailbox_id=mailbox.id, delete_on=None).values(
-        Alias.id
+    for alias in (
+        Alias.filter_by(mailbox_id=mailbox.id, delete_on=None)
+        .with_entities(Alias.id)
+        .all()
     ):
         alias_ids.add(alias.id)
     return len(alias_ids)

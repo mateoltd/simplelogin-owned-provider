@@ -56,7 +56,7 @@ def main(leaks_file: str):
                 exists_count += 1
                 if result.has_leak:
                     password_leaked_count += 1
-                    active = user.is_active()
+                    active = user.is_active
                     eprint(
                         f"- [{i}] User {user} (active={active}) had their password leaked"
                     )

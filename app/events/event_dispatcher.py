@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 
 import newrelic.agent
+from sqlalchemy import text
 
 from app import config
 from app.db import Session
@@ -23,7 +24,10 @@ class Dispatcher(ABC):
 class PostgresDispatcher(Dispatcher):
     def send(self, event: bytes):
         instance = SyncEvent.create(content=event, flush=True)
-        Session.execute(f"NOTIFY {NOTIFICATION_CHANNEL}, '{instance.id}';")
+        Session.execute(
+            text("SELECT pg_notify(:channel, :payload)"),
+            {"channel": NOTIFICATION_CHANNEL, "payload": str(instance.id)},
+        )
 
     @staticmethod
     def get():

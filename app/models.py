@@ -9,7 +9,7 @@ import os
 import random
 import secrets
 import uuid
-from typing import List, Tuple, Optional, Union
+from typing import ClassVar, List, Tuple, Optional, Union
 
 import arrow
 import sqlalchemy as sa
@@ -23,8 +23,7 @@ from newrelic import agent
 from sqlalchemy import orm, or_
 from sqlalchemy import text, desc, CheckConstraint, Index, Column
 from sqlalchemy.dialects.postgresql import TSVECTOR
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import deferred
+from sqlalchemy.orm import declarative_base, deferred
 from sqlalchemy.orm.exc import ObjectDeletedError
 from sqlalchemy.sql import and_
 from sqlalchemy_utils import ArrowType
@@ -61,6 +60,7 @@ _PARTNER_SUBSCRIPTION_GRACE_DAYS = 14
 
 class TSVector(sa.types.TypeDecorator):
     impl = TSVECTOR
+    cache_ok = True
 
 
 class ModelMixin(object):
@@ -81,7 +81,9 @@ class ModelMixin(object):
 
     @classmethod
     def get(cls, id):
-        return Session.query(cls).get(id)
+        if id is None:
+            return None
+        return Session.get(cls, id)
 
     @classmethod
     def get_by(cls, **kw):
@@ -299,6 +301,7 @@ class JobPriority(EnumE):
 
 class IntEnumType(sa.types.TypeDecorator):
     impl = sa.Integer
+    cache_ok = True
 
     def __init__(self, enumtype, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -325,7 +328,12 @@ class AliasOptions:
 class Hibp(Base, ModelMixin):
     __tablename__ = "hibp"
     name = sa.Column(sa.String(), nullable=False, unique=True, index=True)
-    breached_aliases = orm.relationship("Alias", secondary="alias_hibp")
+    breached_aliases = orm.relationship(
+        "Alias",
+        secondary="alias_hibp",
+        back_populates="hibp_breaches",
+        overlaps="alias,alias_hibp,hibp",
+    )
 
     description = sa.Column(sa.Text)
     date = sa.Column(ArrowType, nullable=True)
@@ -414,6 +422,12 @@ class User(Base, ModelMixin, UserMixin, PasswordOracle):
     FLAG_REFERRAL_PROGRAM_PARTICIPANT = 1 << 4
 
     email = sa.Column(sa.String(256), unique=True, nullable=False)
+    custom_domains = orm.relationship(
+        "CustomDomain",
+        back_populates="user",
+        order_by="CustomDomain.id",
+        foreign_keys="CustomDomain.user_id",
+    )
 
     name = sa.Column(sa.String(128), nullable=True)
     is_admin = sa.Column(sa.Boolean, nullable=False, default=False)
@@ -863,6 +877,7 @@ class User(Base, ModelMixin, UserMixin, PasswordOracle):
 
         return True
 
+    @property
     def is_active(self) -> bool:
         if self.delete_on is None:
             return True
@@ -972,7 +987,7 @@ class User(Base, ModelMixin, UserMixin, PasswordOracle):
         return self.can_create_num_aliases(1)
 
     def can_create_num_aliases(self, num_aliases: int) -> bool:
-        if not self.is_active():
+        if not self.is_active:
             return False
 
         if self.disabled:
@@ -1069,13 +1084,6 @@ class User(Base, ModelMixin, UserMixin, PasswordOracle):
 
     def has_custom_domain(self):
         return CustomDomain.filter_by(user_id=self.id, verified=True).count() > 0
-
-    def custom_domains(self) -> List["CustomDomain"]:
-        return (
-            CustomDomain.filter_by(user_id=self.id, verified=True)
-            .order_by(CustomDomain.id.asc())
-            .all()
-        )
 
     def available_domains_for_random_alias(
         self, alias_options: Optional[AliasOptions] = None
@@ -1654,7 +1662,9 @@ class Alias(Base, ModelMixin):
 
     # prefix _ to avoid this object being used accidentally.
     # To have the list of all mailboxes, should use AliasInfo instead
-    _mailboxes = orm.relationship("Mailbox", secondary="alias_mailbox", lazy="joined")
+    _mailboxes = orm.relationship(
+        "Mailbox", secondary="alias_mailbox", lazy="joined", overlaps="alias"
+    )
 
     # If the mailbox has PGP-enabled, user can choose disable the PGP on the alias
     # this is useful when some senders already support PGP
@@ -1697,7 +1707,12 @@ class Alias(Base, ModelMixin):
 
     # have I been pwned
     hibp_last_check = sa.Column(ArrowType, default=None, index=True)
-    hibp_breaches = orm.relationship("Hibp", secondary="alias_hibp")
+    hibp_breaches = orm.relationship(
+        "Hibp",
+        secondary="alias_hibp",
+        back_populates="breached_aliases",
+        overlaps="alias,alias_hibp,hibp",
+    )
 
     # to use Postgres full text search. Only applied on "note" column for now
     # this is a generated Postgres column
@@ -1796,7 +1811,7 @@ class Alias(Base, ModelMixin):
         last_email_log_id UPDATE.
         """
         Session.execute(
-            "SELECT id FROM alias WHERE id = :alias_id FOR UPDATE",
+            text("SELECT id FROM alias WHERE id = :alias_id FOR UPDATE"),
             {"alias_id": alias_id},
         )
 
@@ -1878,12 +1893,12 @@ class Alias(Base, ModelMixin):
         agent.record_custom_event(
             "AliasCreated",
             {
-                "custom_domain": "custom domain"
-                if new_alias.custom_domain_id
-                else "base domain",
-                "from_partner": "from partner"
-                if new_alias.is_created_from_partner()
-                else "from sl",
+                "custom_domain": (
+                    "custom domain" if new_alias.custom_domain_id else "base domain"
+                ),
+                "from_partner": (
+                    "from partner" if new_alias.is_created_from_partner() else "from sl"
+                ),
                 "automatic": "automatic" if new_alias.automatic_creation else "manual",
             },
         )
@@ -2108,9 +2123,12 @@ class Contact(Base, ModelMixin):
 
     alias = orm.relationship(Alias, backref="contacts")
     user = orm.relationship(User)
+    email_logs = orm.relationship(
+        "EmailLog", back_populates="contact", foreign_keys="EmailLog.contact_id"
+    )
 
     # the latest reply sent to this contact
-    latest_reply: Optional[Arrow] = None
+    latest_reply: ClassVar[Optional[Arrow]] = None
 
     # to investigate why the website_email is sometimes not correctly parsed
     # the envelope mail_from
@@ -2330,9 +2348,9 @@ class EmailLog(Base, ModelMixin):
     sl_message_id = deferred(sa.Column(sa.String(512), nullable=True))
 
     refused_email = orm.relationship("RefusedEmail")
-    forward = orm.relationship(Contact)
+    forward = orm.relationship(Contact, viewonly=True, foreign_keys=[contact_id])
 
-    contact = orm.relationship(Contact, backref="email_logs")
+    contact = orm.relationship(Contact, back_populates="email_logs")
     alias = orm.relationship(Alias)
     mailbox = orm.relationship("Mailbox", lazy="joined", foreign_keys=[mailbox_id])
     user = orm.relationship(User)
@@ -2373,7 +2391,7 @@ class EmailLog(Base, ModelMixin):
         if "alias_id" in kwargs:
             sql = "UPDATE alias SET last_email_log_id = :el_id WHERE id = :alias_id"
             Session.execute(
-                sql, {"el_id": email_log.id, "alias_id": kwargs["alias_id"]}
+                text(sql), {"el_id": email_log.id, "alias_id": kwargs["alias_id"]}
             )
         if commit:
             Session.commit()
@@ -2684,7 +2702,9 @@ class CustomDomain(Base, ModelMixin):
         Index("ix_custom_domain_pending_deletion", "pending_deletion"),
     )
 
-    user = orm.relationship(User, foreign_keys=[user_id], backref="custom_domains")
+    user = orm.relationship(
+        User, foreign_keys=[user_id], back_populates="custom_domains"
+    )
 
     @property
     def mailboxes(self):
@@ -3077,6 +3097,7 @@ class Mailbox(Base, ModelMixin):
                 alias._mailboxes.remove(first_mb)
             else:
                 from app.alias_delete import perform_alias_deletion, move_alias_to_trash
+
                 # If the user setting is DeleteImmediately, perform alias deletion
                 # Otherwise, if the user setting is MoveToTrash, assign the default mailbox and move them to trash
 
@@ -3249,7 +3270,7 @@ class AliasMailbox(Base, ModelMixin):
         sa.ForeignKey(Mailbox.id, ondelete="cascade"), nullable=False, index=True
     )
 
-    alias = orm.relationship(Alias)
+    alias = orm.relationship(Alias, overlaps="_mailboxes")
 
 
 class AliasHibp(Base, ModelMixin):
@@ -3266,10 +3287,22 @@ class AliasHibp(Base, ModelMixin):
     )
 
     alias = orm.relationship(
-        "Alias", backref=orm.backref("alias_hibp", cascade="all, delete-orphan")
+        "Alias",
+        backref=orm.backref(
+            "alias_hibp",
+            cascade="all, delete-orphan",
+            overlaps="breached_aliases,hibp_breaches",
+        ),
+        overlaps="breached_aliases,hibp_breaches",
     )
     hibp = orm.relationship(
-        "Hibp", backref=orm.backref("alias_hibp", cascade="all, delete-orphan")
+        "Hibp",
+        backref=orm.backref(
+            "alias_hibp",
+            cascade="all, delete-orphan",
+            overlaps="breached_aliases,hibp_breaches",
+        ),
+        overlaps="breached_aliases,hibp_breaches",
     )
 
 
@@ -4156,7 +4189,7 @@ class SyncEvent(Base, ModelMixin):
                 args["taken_older_than"] = allow_taken_older_than.datetime
             sql_taken_condition = "({})".format(" OR ".join(taken_condition))
             sql = f"UPDATE sync_event SET taken_time = :taken_time WHERE id = :sync_event_id AND {sql_taken_condition}"
-            res = Session.execute(sql, args)
+            res = Session.execute(text(sql), args)
             Session.commit()
         except ObjectDeletedError:
             return False

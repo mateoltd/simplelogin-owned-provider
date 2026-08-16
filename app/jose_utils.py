@@ -11,10 +11,11 @@ from app.models import ClientUser
 
 with open(OPENID_PRIVATE_KEY_PATH, "rb") as f:
     _key = jwk.JWK.from_pem(f.read())
+_public_key = _key.export_public(as_dict=True)
 
 
 def get_jwk_key() -> dict:
-    return _key._public_params()
+    return dict(_public_key)
 
 
 def make_id_token(
@@ -52,7 +53,7 @@ def make_id_token(
     claims = {**claims, **client_user.get_user_info()}
 
     jwt_token = jwt.JWT(
-        header={"alg": "RS256", "kid": _key._public_params()["kid"]}, claims=claims
+        header={"alg": "RS256", "kid": _public_key["kid"]}, claims=claims
     )
     jwt_token.make_signed_token(_key)
     return jwt_token.serialize()
@@ -60,7 +61,7 @@ def make_id_token(
 
 def verify_id_token(id_token) -> bool:
     try:
-        jwt.JWT(key=_key, jwt=id_token)
+        jwt.JWT(key=_key, jwt=id_token, algs=["RS256"], expected_type="JWS")
     except Exception:
         LOG.e("id token not verified")
         return False
@@ -69,7 +70,7 @@ def verify_id_token(id_token) -> bool:
 
 
 def decode_id_token(id_token) -> jwt.JWT:
-    return jwt.JWT(key=_key, jwt=id_token)
+    return jwt.JWT(key=_key, jwt=id_token, algs=["RS256"], expected_type="JWS")
 
 
 def id_token_hash(value, hashfunc=hashlib.sha256):

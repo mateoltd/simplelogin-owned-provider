@@ -46,7 +46,7 @@ def handle_user(user_id: str):
     user: Optional[User] = User.get(user_id)
     if user is None:
         raise Exception(f"User {user_id} not found")
-    if not user.is_active():
+    if not user.is_active:
         print(f"User {user_id} is not active")
         return
 

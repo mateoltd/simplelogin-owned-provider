@@ -6,11 +6,11 @@ import argparse
 import hashlib
 import json
 import os
+from sqlalchemy import text
 
 from app.db import Session
 from app.models import CustomDomain, Mailbox, User
 from server import create_light_app
-
 
 LOCK_ID = 7_329_461_006
 
@@ -22,7 +22,7 @@ def operation_key(action: str, target: str) -> str:
 def was_recorded(key: str) -> bool:
     return bool(
         Session.execute(
-            "SELECT 1 FROM owned_provider.operation WHERE idempotency_key=:key",
+            text("SELECT 1 FROM owned_provider.operation WHERE idempotency_key=:key"),
             {"key": key},
         ).scalar()
     )
@@ -30,11 +30,11 @@ def was_recorded(key: str) -> bool:
 
 def remember(key: str, operation: str, result: dict):
     Session.execute(
-        """
+        text("""
         INSERT INTO owned_provider.operation(idempotency_key, operation, result)
         VALUES (:key, :operation, CAST(:result AS jsonb))
         ON CONFLICT (idempotency_key) DO NOTHING
-        """,
+        """),
         {"key": key, "operation": operation, "result": json.dumps(result)},
     )
     Session.commit()
@@ -138,7 +138,7 @@ def main():
     domain.add_argument("domain")
     domain.add_argument("dns_report")
     args = parser.parse_args()
-    Session.execute("SELECT pg_advisory_lock(:lock)", {"lock": LOCK_ID})
+    Session.execute(text("SELECT pg_advisory_lock(:lock)"), {"lock": LOCK_ID})
     try:
         if args.action == "status":
             result = status()
@@ -148,7 +148,7 @@ def main():
             result = mailbox_action(args.action, args.email)
         print(json.dumps(result, sort_keys=True))
     finally:
-        Session.execute("SELECT pg_advisory_unlock(:lock)", {"lock": LOCK_ID})
+        Session.execute(text("SELECT pg_advisory_unlock(:lock)"), {"lock": LOCK_ID})
         Session.commit()
 
 

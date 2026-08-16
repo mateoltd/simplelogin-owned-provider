@@ -23,7 +23,7 @@
         <td>
           {% if bundle.get('user', None) %}
 
-            <a href="/admin/admin.email_search/?query={{ bundle.get("user").email }}">{{ bundle.get("user").email }}</a>
+            <a href="{{ url_for('email_search.index', query=bundle.get('user').email) }}">{{ bundle.get("user").email }}</a>
           {% else %}
             {{ bundle.get('email', '') }}
           {% endif %}
