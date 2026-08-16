@@ -55,6 +55,7 @@ def main():
         "templates/header.html",
         "tests/conftest.py",
         "tests/test_email_utils.py",
+        "uv.lock",
     }
     allowed_prefixes = (
         "app/mail_edge/",
