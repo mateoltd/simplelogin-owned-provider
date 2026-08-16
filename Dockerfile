@@ -230,5 +230,6 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0-only" \
 COPY --from=runtime-rootfs / /
 
 WORKDIR /code
+USER 65532:65532
 EXPOSE 7777
 CMD ["gunicorn", "wsgi:app", "-b", "0.0.0.0:7777", "-w", "2", "--timeout", "15"]

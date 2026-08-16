@@ -36,7 +36,7 @@ def test_redact_removes_each_line_of_a_multiline_secret():
 
 def test_sensitive_scan_fails_closed_on_unredacted_fields():
     assert sensitive_kinds("mail person@example.com") == {"email"}
-    assert sensitive_kinds("source 192.168.1.151") == {"ip"}
+    assert sensitive_kinds("source 192.0.2.151") == {"ip"}
     assert sensitive_kinds("peer 2001:db8::1") == {"ip"}
     assert sensitive_kinds("api_key=not-redacted") == {"auth"}
     assert sensitive_kinds("token=" + "a" * 64) == {"auth", "token"}
