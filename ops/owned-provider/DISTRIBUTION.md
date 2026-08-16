@@ -27,7 +27,12 @@ org.opencontainers.image.upstream.revision=dbc45fcce4e8e6b4fa615cc729ca95a67bf75
 org.opencontainers.image.licenses=AGPL-3.0-only
 ```
 
-The build refuses a dirty worktree, so the revision is not a false mapping.
+The build refuses a dirty worktree, so the revision is not a false mapping. It
+streams the exact commit through `git archive` for both Docker build contexts;
+checkout mtimes and ignored runtime state therefore cannot change the layers.
+`SOURCE_DATE_EPOCH` is the fork commit timestamp in the CPython builder and both
+runtime stages, fixing interpreter metadata, bytecode mode, and OCI creation
+times to that reviewed commit.
 The Python and frontend manifests declare `AGPL-3.0-only`, matching the root
 license, and default web navigation links to the fork source. Run
 `owned-provider distribution-audit` only after generating the compliance bundle
