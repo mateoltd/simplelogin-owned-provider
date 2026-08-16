@@ -8,9 +8,9 @@ distinguishes running the default stack from conveying image bytes.
 
 The default command builds two local images from this repository:
 
-1. `simplelogin-owned-provider-upstream:<UPSTREAM_COMMIT>` from the root
-   Dockerfile, including Python dependencies and compiled frontend assets.
-2. `simplelogin-owned-provider:<UPSTREAM_COMMIT>` from the operations
+1. `simplelogin-owned-provider-upstream:<FORK_COMMIT>` from the root
+   Dockerfile, including Python dependencies and pinned frontend dependencies.
+2. `simplelogin-owned-provider:<FORK_COMMIT>` from the operations
    Dockerfile, inheriting the first image and adding the unprivileged runtime.
 
 The second image runs `app`, `email`, `job-runner`, `observer`, `synthetic`, and
@@ -30,8 +30,10 @@ org.opencontainers.image.licenses=AGPL-3.0-only
 The build refuses a dirty worktree, so the revision is not a false mapping.
 The Python and frontend manifests declare `AGPL-3.0-only`, matching the root
 license, and default web navigation links to the fork source. Run
-`owned-provider distribution-audit` after every build to verify those labels,
-metadata, excluded development tools, and the expected copyleft inventory.
+`owned-provider distribution-audit` only after generating the compliance bundle
+described below. The command now binds that bundle to the inspected local image
+ID and rootfs layers, rescans its exact Python, npm, Debian, executable, and
+native ELF inventories, and fails if the recorded inventory differs.
 
 ## Copyleft inventory on default paths
 
@@ -43,15 +45,14 @@ metadata, excluded development tools, and the expected copyleft inventory.
 | `Unidecode 1.1.1` | GPL | Python runtime package used in application normalization paths. | Include license and corresponding source; treat it as runtime, not tooling. |
 | GnuPG and supporting `libassuan`, `libgcrypt`, `libgpg-error` | GnuPG is GPL; supporting libraries are LGPL | `gpg` remains in the image and is the default PGP implementation when `USE_RUST_PGP` is false. | Include notices and matching source for the installed Ubuntu package versions. Preserve dynamic-link and relinking rights for LGPL libraries. |
 | GNU `tar` | GPL | Remains in the final image and is invoked by backup/export and restore. | Include its license and matching Ubuntu source when the image is conveyed. |
-| `psycopg2-binary 2.9.10` | LGPL-3.0-or-later with OpenSSL exception | Core PostgreSQL client for every stateful service. Its wheel includes native libpq/OpenSSL/Kerberos/LDAP/SASL-related closure. | Produce an exact wheel/native SBOM and corresponding-source set before binary distribution; the bundled native closure is not established by the Python lock alone. |
-| `jwcrypto 0.8` | LGPL-3.0-or-later | Active OIDC/JWS runtime. | Retain its license/source and LGPL replacement/relinking rights. |
+| `psycopg2 2.9.12` | LGPL-3.0-or-later with OpenSSL exception | Core PostgreSQL client for every stateful service, built from source and dynamically linked to the inventoried Ubuntu `libpq`. | Include its exact source and license, trace every native dependency, and preserve dynamic replacement rights. |
+| `jwcrypto 1.5.8` | LGPL-3.0-or-later | Active OIDC/JWS runtime. | Retain its license/source and LGPL replacement/relinking rights. |
 | `chardet 3.0.4` | LGPL | Runtime transitive dependency used by mail/address parsing. | Add the upstream license and source to a conveyed artifact's notices/source set. |
 | `crontab 0.22.8` | LGPL | Packaged through yacron, but no yacron service runs by default. | Still include license/source if conveying the image because the bytes are present. |
-| `libc6 2.35` | LGPL | Loaded by all image processes. | Apply the system-library exception analysis, retain notices, and make matching source available where required. |
-| `flask-debugtoolbar-sqlalchemy 0.2.0` | GPL | Packaged as a direct runtime dependency, but the toolbar SQL panel is disabled and no default service enables it. | Bytes still trigger redistribution analysis. Remove it in the future if upstream compatibility no longer needs it. |
+| Ubuntu `libc6` | LGPL | Loaded by all image processes. | Retain notices and include the exact source selected by the pinned Ubuntu snapshot. |
 | `tld 0.12.6` | GPL/LGPL/MPL tri-license | Runtime mail/domain parsing dependency. | Select and record the MPL option for a conveyed build and retain its notice/source. |
 | `pylint`, `djlint`, `astroid`, Black, pytest, tqdm, virtualenv | GPL/LGPL/permissive development tools | No longer installed because production uses `uv sync --locked --no-dev`. | No production-image obligation for bytes that are absent. Source checkout development remains governed by each tool's license. |
-| `gcc`, Binutils, Git | GPL build tools | `gcc` and Git are explicitly purged. Binutils may remain as an indirect system package but is not invoked by a default service. | Confirm the final package SBOM before conveyance and provide matching source for any GPL bytes that remain. |
+| `gcc`, Binutils, Git | GPL build tools | Build stages contain them; the final runtime policy rejects their packages and executables. | The executable image audit must prove they are absent. |
 
 ## Other default images
 
@@ -61,6 +62,88 @@ shipping those images is a separate distribution act: retain PostgreSQL's
 license, and explicitly approve Redis 7.4's RSALv2/SSPLv1 terms before doing so.
 The test-only Mailpit image needs the same review only if it is redistributed.
 
+## Deterministic compliance bundle
+
+`distribution-policy.toml` is the fail-closed decision record. It pins the fork
+and upstream source locations, CycloneDX and bundle format versions, copyleft
+source/relinking decision tables, prohibited runtime development tooling, and
+the declaration that PostgreSQL, Redis, Mailpit, and the external Mail Edge
+service are referenced rather than conveyed in the application image. Changing
+the bytes being conveyed requires changing that declaration and repeating the
+review.
+
+`scripts/distribution_bundle.py` accepts a reviewed inventory for one exact
+image and atomically creates:
+
+- canonical CycloneDX 1.6 JSON with no wall-clock timestamp, a deterministic
+  serial number, package dependency edges, and each native file, digest, owner,
+  and resolved `DT_NEEDED` edge;
+- notices derived from the same component records as the SBOM;
+- a source manifest mapping every component to its license text and HTTPS source
+  location, plus exact download URLs, SHA-256 values, and one or more safe source
+  materials for every policy-classified copyleft component (including the
+  clear-signed `.dsc` and archive parts for multipart Debian source packages);
+- an LGPL materials manifest requiring consumers, linkage mode, replacement
+  instructions, and the policy-required source/object/link inputs;
+- fork, upstream, image ID, platform, rootfs layer, OCI-label, runtime-inventory,
+  and referenced-image provenance; and
+- one strictly sorted `SHA256SUMS` covering the exact bundle file set.
+
+All archive member paths and links are checked before inclusion, and Debian
+source control files must be clear-signed and carry the fields that bind every
+multipart source archive. Bundle paths
+must be normalized relative POSIX paths; symlinks, special files, missing or
+extra artifacts, empty license/instruction files, unknown licenses, hashless
+copyleft source, incomplete scans, unresolved native links, and unowned native
+files are fatal. Missing exact source archives can be downloaded with
+`--fetch-sources`; downloads are HTTPS-only, identity encoded, byte bounded,
+and accepted only after their declared digest matches. License texts and
+relinking materials are never synthesized or downloaded from an unreviewed
+location.
+
+The image-inspection phase is read-only and writes canonical evidence for the
+reviewed inventory:
+
+```sh
+runtime_dir="${OWNED_PROVIDER_RUNTIME_DIR:-$PWD/.owned-provider}"
+image="simplelogin-owned-provider:$(git rev-parse HEAD)"
+mkdir -p "$runtime_dir/evidence"
+python3 ops/owned-provider/scripts/distribution_bundle.py inspect-image \
+  --image "$image" >"$runtime_dir/evidence/distribution-image.json"
+```
+
+The reviewed input must reconcile that evidence with exact Python and npm lock
+records, Debian binary-to-source mappings, license texts, corresponding source,
+native ownership, and relinking materials. Generate twice into two new
+directories and require identical contents before selecting the audit bundle:
+
+```sh
+python3 ops/owned-provider/scripts/distribution_bundle.py generate \
+  --input "$runtime_dir/evidence/distribution-input.json" \
+  --artifact-root "$runtime_dir/evidence/distribution-materials" \
+  --output "$runtime_dir/evidence/distribution-first" --fetch-sources
+python3 ops/owned-provider/scripts/distribution_bundle.py generate \
+  --input "$runtime_dir/evidence/distribution-input.json" \
+  --artifact-root "$runtime_dir/evidence/distribution-materials" \
+  --output "$runtime_dir/evidence/distribution-second" --fetch-sources
+diff -ru "$runtime_dir/evidence/distribution-first" \
+  "$runtime_dir/evidence/distribution-second"
+test ! -e "$runtime_dir/evidence/distribution"
+mv "$runtime_dir/evidence/distribution-first" \
+  "$runtime_dir/evidence/distribution"
+ops/owned-provider/bin/owned-provider distribution-audit
+```
+
+The final command refuses a dirty source tree, reinspects the actual local image,
+walks its exact Python distributions, npm packages, and Debian packages, checks
+every prohibited executable, hashes every ELF under the application,
+interpreter, and system runtime roots, resolves every dynamic dependency with
+`ldd`, and requires exact equality with the bundle. It then validates canonical
+JSON, checksums, and semantic agreement among SBOM, source, notices, relinking,
+and provenance records, exact
+corresponding-source coverage, and LGPL materials. Rewriting `SHA256SUMS` after
+altering another file does not bypass these semantic checks.
+
 ## Release boundary
 
 This lane does not push or export any container image. Source publication is
@@ -68,19 +151,25 @@ closed for the owned-provider Git commit once the reviewed branch is pushed:
 the image and application both point to the exact fork, and the revision label
 pins the bytes to one commit.
 
-Binary distribution is not yet cleared. Before any registry push, image save,
-appliance delivery, or offline bundle, the distributor must:
+The deterministic generator and verifier implement the required artifact
+format and enforcement. Binary distribution is still not cleared merely by
+having those scripts in the source tree. Before any registry push, image save,
+appliance delivery, or offline bundle, the distributor must produce the bundle
+for the final clean image and prove all of these gates:
 
 1. generate an image-level SBOM including Debian packages, Python wheels,
    native libraries, and compiled frontend dependencies;
 2. bundle all required license texts and copyright notices;
 3. archive or make available the exact fork source and matching source for GPL
-   and LGPL packages, including the native closure of `psycopg2-binary`;
+   and LGPL packages, including the native closure of source-built `psycopg2`;
 4. document LGPL relinking/replacement rights and avoid anti-reverse-engineering
    terms that conflict with those rights; and
 5. record whether PostgreSQL, Redis, or Mailpit image bytes are included rather
    than merely pulled by the recipient.
 
-Until those five deliverables are attached to a concrete binary artifact,
-`distribution-audit` is a packaging/provenance gate, not a legal clearance for
-binary conveyance.
+The same clean-room checkout must reproduce the image digest and both generated
+bundle directories byte for byte. CycloneDX schema validation and an attended
+license/source/relink review remain required evidence alongside the executable
+audit. Until those deliverables are attached to the concrete image and every
+gate passes, binary conveyance remains blocked; a passing technical audit is
+evidence, not a general legal opinion.
