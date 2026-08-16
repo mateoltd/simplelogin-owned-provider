@@ -8,7 +8,6 @@ x-app: &app
     dockerfile: ops/owned-provider/Dockerfile
     args:
       BASE_IMAGE: simplelogin-owned-provider-upstream:${OWNED_PROVIDER_SOURCE_COMMIT}
-      SOURCE_DATE_EPOCH: ${OWNED_PROVIDER_SOURCE_DATE_EPOCH:?set by owned-provider}
     labels:
       org.opencontainers.image.licenses: AGPL-3.0-only
       org.opencontainers.image.source: https://github.com/mateoltd/simplelogin-owned-provider
