@@ -202,7 +202,6 @@ build_images() {
   git -C "$repository_root" archive --format=tar "$initial_head" | \
     docker buildx build --no-cache --platform linux/amd64 --load \
       --build-arg "BASE_IMAGE=$upstream_image" \
-      --build-arg "SOURCE_DATE_EPOCH=$owned_provider_source_epoch" \
       --file ops/owned-provider/Dockerfile \
       --tag "$image" -
   if [[ "$(git -C "$repository_root" rev-parse HEAD)" != "$initial_head" ]] || \

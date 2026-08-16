@@ -105,24 +105,14 @@ RUN --mount=from=frontend,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/
     && find /opt/venv -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
     && rm -rf /root/.cache /tmp/uv*
 
-FROM --platform=linux/amd64 ${UBUNTU_IMAGE} AS runtime
+FROM --platform=linux/amd64 ${UBUNTU_IMAGE} AS runtime-rootfs
 
 ARG UBUNTU_SNAPSHOT="20260731T000000Z"
 ARG OWNED_PROVIDER_SOURCE_COMMIT
 ARG SIMPLELOGIN_UPSTREAM_COMMIT
 ARG SOURCE_DATE_EPOCH
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-LABEL org.opencontainers.image.licenses="AGPL-3.0-only" \
-      org.opencontainers.image.source="https://github.com/mateoltd/simplelogin-owned-provider" \
-      org.opencontainers.image.upstream.source="https://github.com/simple-login/app" \
-      org.opencontainers.image.revision="${OWNED_PROVIDER_SOURCE_COMMIT}" \
-      org.opencontainers.image.upstream.revision="${SIMPLELOGIN_UPSTREAM_COMMIT}" \
-      org.opencontainers.image.source-date-epoch="${SOURCE_DATE_EPOCH}"
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN --mount=from=frontend,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/bootstrap-ca.crt,ro \
     install -D -m 0644 /tmp/bootstrap-ca.crt /etc/ssl/certs/ca-certificates.crt \
@@ -186,7 +176,44 @@ RUN test -n "${OWNED_PROVIDER_SOURCE_COMMIT}" \
     && test ! -e /code/local_data/dkim.pub.key \
     && test ! -e /code/local_data/email_tests \
     && test ! -e /code/local_data/test_words.txt \
-    && test -z "$(find /code/static/upload -mindepth 1 -print -quit)"
+    && test -z "$(find /code/static/upload -mindepth 1 -print -quit)" \
+    && printf 'simplelogin:x:65532:65532:SimpleLogin runtime:/tmp:/usr/sbin/nologin\n' >> /etc/passwd \
+    && printf 'simplelogin:x:65532:\n' >> /etc/group \
+    && /opt/venv/bin/python -c 'from flanker.addresslib import address; assert callable(address.parse_list)' \
+    && rm -f \
+        /var/log/alternatives.log /var/log/bootstrap.log /var/log/dpkg.log \
+        /var/log/faillog /var/log/lastlog /var/log/wtmp /var/log/btmp \
+        /var/log/apt/* \
+    && touch --no-dereference --date="@${SOURCE_DATE_EPOCH}" / \
+    && for path in \
+        /bin /boot /code /etc /home /lib /lib64 /media /mnt /opt \
+        /root /run /sbin /srv /tmp /usr /var; \
+       do \
+         if [ -e "$path" ] || [ -L "$path" ]; then \
+           find "$path" -xdev -exec \
+             touch --no-dereference --date="@${SOURCE_DATE_EPOCH}" {} +; \
+         fi; \
+       done
 
+FROM scratch AS runtime
+
+ARG OWNED_PROVIDER_SOURCE_COMMIT
+ARG SIMPLELOGIN_UPSTREAM_COMMIT
+ARG SOURCE_DATE_EPOCH
+
+ENV PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.source="https://github.com/mateoltd/simplelogin-owned-provider" \
+      org.opencontainers.image.upstream.source="https://github.com/simple-login/app" \
+      org.opencontainers.image.revision="${OWNED_PROVIDER_SOURCE_COMMIT}" \
+      org.opencontainers.image.upstream.revision="${SIMPLELOGIN_UPSTREAM_COMMIT}" \
+      org.opencontainers.image.source-date-epoch="${SOURCE_DATE_EPOCH}"
+
+COPY --from=runtime-rootfs / /
+
+WORKDIR /code
 EXPOSE 7777
 CMD ["gunicorn", "wsgi:app", "-b", "0.0.0.0:7777", "-w", "2", "--timeout", "15"]
