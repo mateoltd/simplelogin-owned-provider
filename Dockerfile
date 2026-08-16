@@ -31,8 +31,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 WORKDIR /build
 COPY pyproject.toml uv.lock .python-version ./
 
-RUN sed -i "s/^deb /deb [snapshot=${UBUNTU_SNAPSHOT}] /" /etc/apt/sources.list \
-    && apt-get update \
+RUN --mount=from=frontend,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/bootstrap-ca.crt,ro \
+    install -D -m 0644 /tmp/bootstrap-ca.crt /etc/ssl/certs/ca-certificates.crt \
+    && sed -i "s/^deb /deb [snapshot=${UBUNTU_SNAPSHOT}] /" /etc/apt/sources.list \
+    && apt-get -o APT::Update::Error-Mode=any update \
     && apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl libpq-dev libre2-dev \
     && curl --fail --location --show-error --silent \
@@ -66,8 +68,10 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.upstream.revision="${SIMPLELOGIN_UPSTREAM_COMMIT}" \
       org.opencontainers.image.source-date-epoch="${SOURCE_DATE_EPOCH}"
 
-RUN sed -i "s/^deb /deb [snapshot=${UBUNTU_SNAPSHOT}] /" /etc/apt/sources.list \
-    && apt-get update \
+RUN --mount=from=frontend,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/bootstrap-ca.crt,ro \
+    install -D -m 0644 /tmp/bootstrap-ca.crt /etc/ssl/certs/ca-certificates.crt \
+    && sed -i "s/^deb /deb [snapshot=${UBUNTU_SNAPSHOT}] /" /etc/apt/sources.list \
+    && apt-get -o APT::Update::Error-Mode=any update \
     && apt-get install -y --no-install-recommends \
         bash ca-certificates gnupg libre2-9 libpq5 tar \
     && apt-get clean \
