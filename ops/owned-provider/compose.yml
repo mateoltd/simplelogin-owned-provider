@@ -91,9 +91,21 @@ x-app: &app
     - source: mail_edge_host_config
       target: /run/mail-edge/config.json
   volumes: &app_volumes
-    - uploads:/code/static/upload
-    - unsent:/code/var/unsent
-    - mail-edge-spool:/code/var/mail-edge-spool
+    - type: volume
+      source: uploads
+      target: /code/static/upload
+      volume:
+        nocopy: true
+    - type: volume
+      source: unsent
+      target: /code/var/unsent
+      volume:
+        nocopy: true
+    - type: volume
+      source: mail-edge-spool
+      target: /code/var/mail-edge-spool
+      volume:
+        nocopy: true
   depends_on: &app_dependencies
     postgres:
       condition: service_healthy

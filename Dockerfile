@@ -189,6 +189,9 @@ RUN test -n "${OWNED_PROVIDER_SOURCE_COMMIT}" \
     && test -z "$(find /code/static/upload -mindepth 1 -print -quit)" \
     && printf 'simplelogin:x:65532:65532:SimpleLogin runtime:/tmp:/usr/sbin/nologin\n' >> /etc/passwd \
     && printf 'simplelogin:x:65532:\n' >> /etc/group \
+    && mkdir -p /code/var/unsent /code/var/mail-edge-spool \
+    && chown 65532:65532 \
+        /code/static/upload /code/var/unsent /code/var/mail-edge-spool \
     && /opt/venv/bin/python -c 'from flanker.addresslib import address; assert callable(address.parse_list)' \
     && find /opt/venv -type d -name __pycache__ -prune -exec rm -rf {} + \
     && find /opt/venv -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \

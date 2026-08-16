@@ -160,6 +160,7 @@ def main():
 
     hardened = {}
     mail_edge_mounts = {}
+    writable_volume_paths = {}
     loopback_ports = True
     for container in inspected:
         service = container["Config"]["Labels"].get("com.docker.compose.service")
@@ -194,6 +195,30 @@ def main():
             if not all(mail_edge_mounts[service].values()):
                 raise RuntimeError(
                     f"service {service} lacks Mail Edge mounts: {mail_edge_mounts[service]}"
+                )
+            volume_access = json.loads(
+                command(
+                    "docker",
+                    "exec",
+                    container["Id"],
+                    "/opt/venv/bin/python",
+                    "-c",
+                    "import json, os; from pathlib import Path; "
+                    "paths=('/code/static/upload','/code/var/unsent','/code/var/mail-edge-spool'); "
+                    "print(json.dumps({path:{'owner':[Path(path).stat().st_uid,Path(path).stat().st_gid],"
+                    "'writable':os.access(path,os.W_OK)} for path in paths},sort_keys=True))",
+                )
+            )
+            writable_volume_paths[service] = volume_access
+            invalid_volume_paths = {
+                path: values
+                for path, values in volume_access.items()
+                if values != {"owner": [65532, 65532], "writable": True}
+            }
+            if invalid_volume_paths:
+                raise RuntimeError(
+                    f"service {service} has unsafe writable volume ownership: "
+                    f"{invalid_volume_paths}"
                 )
     missing_hardened = {
         "app",
@@ -395,6 +420,7 @@ if leaks:
                 "loopback_only_ports": loopback_ports,
                 "hardened_services": hardened,
                 "mail_edge_mounts": mail_edge_mounts,
+                "writable_volume_paths": writable_volume_paths,
                 "secrets_absent_from_recent_logs": True,
                 "pii_absent_from_recent_service_logs": True,
                 "image_revision": revision,

@@ -176,11 +176,17 @@ prepare_volumes() {
   ensure_volume simplelogin-owned-provider_uploads uploads
   ensure_volume simplelogin-owned-provider_unsent unsent
   ensure_volume simplelogin-owned-provider_mail-edge-spool mail-edge-spool
+  local -a volume_mounts=(
+    --mount type=volume,source=simplelogin-owned-provider_uploads,target=/code/static/upload,volume-nocopy
+    --mount type=volume,source=simplelogin-owned-provider_unsent,target=/code/var/unsent,volume-nocopy
+    --mount type=volume,source=simplelogin-owned-provider_mail-edge-spool,target=/code/var/mail-edge-spool,volume-nocopy
+  )
   docker run --rm --platform linux/amd64 --user 0 --entrypoint sh \
-    -v simplelogin-owned-provider_uploads:/code/static/upload \
-    -v simplelogin-owned-provider_unsent:/code/var/unsent \
-    -v simplelogin-owned-provider_mail-edge-spool:/code/var/mail-edge-spool \
+    "${volume_mounts[@]}" \
     "$image" -c 'chown -R 65532:65532 /code/static/upload /code/var/unsent /code/var/mail-edge-spool'
+  docker run --rm --platform linux/amd64 --user 65532:65532 --entrypoint sh \
+    "${volume_mounts[@]}" \
+    "$image" -c 'test -w /code/static/upload && test -w /code/var/unsent && test -w /code/var/mail-edge-spool'
 }
 
 build_images() {
