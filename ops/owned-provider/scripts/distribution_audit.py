@@ -1,166 +1,104 @@
-"""Fail closed on packaged license metadata, tooling, and source provenance."""
+"""Fail closed on the compliance bundle for the exact local production image."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
-import tomllib
 from pathlib import Path
-from typing import Any
 
-
-SOURCE_URL = "https://github.com/mateoltd/simplelogin-owned-provider"
-LICENSE_EXPRESSION = "AGPL-3.0-only"
-FORBIDDEN_DISTRIBUTIONS = {
-    "astroid",
-    "black",
-    "djlint",
-    "pylint",
-    "pytest",
-    "tqdm",
-    "virtualenv",
-}
-REQUIRED_COPYLEFT_DISTRIBUTIONS = {
-    "chardet",
-    "crontab",
-    "jwcrypto",
-    "psycopg2-binary",
-    "unidecode",
-}
+from distribution_bundle import (
+    ComplianceBundleVerifier,
+    DistributionPolicy,
+    DockerImageInspector,
+    validate_runtime_inventory,
+)
 
 
 def command(*args: str) -> str:
     return subprocess.check_output(args, text=True).strip()
 
 
-def container_command(image: str, executable: str, *args: str) -> str:
-    return command(
-        "docker",
-        "run",
-        "--rm",
-        "--platform",
-        "linux/amd64",
-        "--entrypoint",
-        executable,
-        image,
-        *args,
+def default_bundle_path(repository: Path) -> Path:
+    runtime = Path(
+        os.environ.get("OWNED_PROVIDER_RUNTIME_DIR", repository / ".owned-provider")
     )
-
-
-def load_image(image: str) -> dict[str, Any]:
-    inspected = json.loads(command("docker", "image", "inspect", image))
-    if not isinstance(inspected, list) or len(inspected) != 1:
-        raise RuntimeError(f"expected one image inspection result for {image}")
-    return inspected[0]
-
-
-def read_project_license(repository: Path) -> str:
-    with (repository / "pyproject.toml").open("rb") as stream:
-        project = tomllib.load(stream)["project"]
-    return str(project["license"])
-
-
-def read_frontend_metadata(repository: Path) -> tuple[str, str, str]:
-    package = json.loads((repository / "static/package.json").read_text())
-    lock = json.loads((repository / "static/package-lock.json").read_text())
-    return (
-        str(package["license"]),
-        str(lock["dependencies"]["intro.js"]["version"]),
-        str(lock["dependencies"]["qrious"]["version"]),
-    )
+    return runtime / "evidence" / "distribution"
 
 
 def main() -> None:
+    script_dir = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True, type=Path)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--bundle", type=Path)
+    parser.add_argument(
+        "--policy",
+        type=Path,
+        default=script_dir.parent / "distribution-policy.toml",
+    )
     args = parser.parse_args()
     repository = args.repository.resolve()
+    bundle = (args.bundle or default_bundle_path(repository)).resolve()
+    policy = DistributionPolicy.load(args.policy)
 
-    if command("git", "-C", str(repository), "status", "--porcelain"):
+    if command(
+        "git",
+        "-C",
+        str(repository),
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+    ):
         raise RuntimeError("distribution audit requires a clean source worktree")
-
     revision = command("git", "-C", str(repository), "rev-parse", "HEAD")
+    source_date_epoch = command(
+        "git", "-C", str(repository), "show", "-s", "--format=%ct", "HEAD"
+    )
     upstream_revision = (
         (repository / "ops/owned-provider/UPSTREAM_COMMIT").read_text().strip()
     )
-    if "GNU AFFERO GENERAL PUBLIC LICENSE" not in (repository / "LICENSE").read_text():
-        raise RuntimeError("root LICENSE is not the declared AGPL license")
-    project_license = read_project_license(repository)
-    frontend_license, intro_version, qrious_version = read_frontend_metadata(repository)
-    if {project_license, frontend_license} != {LICENSE_EXPRESSION}:
-        raise RuntimeError(
-            "Python and frontend metadata must both declare AGPL-3.0-only"
-        )
 
-    image = load_image(args.image)
-    labels = image.get("Config", {}).get("Labels", {})
-    expected_labels = {
-        "org.opencontainers.image.licenses": LICENSE_EXPRESSION,
+    inspector = DockerImageInspector()
+    image = inspector.inspect_identity(args.image)
+    required_labels = {
+        "org.opencontainers.image.source": policy.fork_source_url,
+        "org.opencontainers.image.upstream.source": policy.upstream_source_url,
         "org.opencontainers.image.revision": revision,
-        "org.opencontainers.image.source": SOURCE_URL,
         "org.opencontainers.image.upstream.revision": upstream_revision,
+        "org.opencontainers.image.licenses": policy.license_expression,
+        "org.opencontainers.image.source-date-epoch": source_date_epoch,
     }
-    actual_labels = {key: labels.get(key) for key in expected_labels}
-    if actual_labels != expected_labels:
+    observed_labels = {name: image.labels.get(name) for name in required_labels}
+    if observed_labels != required_labels:
         raise RuntimeError(
-            f"image provenance labels differ: {actual_labels} != {expected_labels}"
+            f"production image provenance labels differ: {observed_labels}"
         )
-
-    installed = json.loads(
-        container_command(
-            args.image,
-            "/code/.venv/bin/python",
-            "-c",
-            "import importlib.metadata as m,json; "
-            "print(json.dumps(sorted({d.metadata['Name'].lower(): d.version "
-            "for d in m.distributions()}.items())))",
-        )
-    )
-    installed_names = {str(name) for name, _version in installed}
-    forbidden = sorted(installed_names & FORBIDDEN_DISTRIBUTIONS)
-    if forbidden:
-        raise RuntimeError(f"development distributions shipped: {forbidden}")
-    missing_copyleft = sorted(REQUIRED_COPYLEFT_DISTRIBUTIONS - installed_names)
-    if missing_copyleft:
+    embedded = inspector.inspect_embedded_provenance(args.image)
+    expected_embedded = {
+        "revision": revision,
+        "source_date_epoch": source_date_epoch,
+        "owned_provider_runtime_present": False,
+        "forbidden_fixture_paths_present": [],
+        "static_upload_files_present": [],
+    }
+    if embedded != expected_embedded:
         raise RuntimeError(
-            f"expected runtime copyleft inventory changed: {missing_copyleft}"
+            f"runtime provenance or generated-state exclusion differs: {embedded}"
         )
-
-    tools = container_command(
-        args.image,
-        "/bin/sh",
-        "-c",
-        "for name in gcc git gpg tar; do "
-        'if command -v "$name" >/dev/null; then printf \'%s=present\\n\' "$name"; '
-        "else printf '%s=absent\\n' \"$name\"; fi; done",
+    runtime = inspector.inspect_runtime(args.image, policy, native_complete=True)
+    validate_runtime_inventory(runtime, policy)
+    native = inspector.inspect_native(args.image)
+    result = ComplianceBundleVerifier(policy).verify(
+        bundle,
+        expected_image=image,
+        expected_runtime=runtime,
+        expected_native=native,
+        expected_repository_revision=revision,
+        expected_upstream_revision=upstream_revision,
     )
-    tool_inventory = dict(line.split("=", 1) for line in tools.splitlines())
-    if tool_inventory != {
-        "gcc": "absent",
-        "git": "absent",
-        "gpg": "present",
-        "tar": "present",
-    }:
-        raise RuntimeError(f"unexpected runtime tool inventory: {tool_inventory}")
-
-    print(
-        json.dumps(
-            {
-                "development_distributions_absent": True,
-                "frontend_copyleft": {
-                    "intro.js": intro_version,
-                    "qrious": qrious_version,
-                },
-                "image_labels": actual_labels,
-                "python_copyleft_inventory": sorted(REQUIRED_COPYLEFT_DISTRIBUTIONS),
-                "runtime_tools": tool_inventory,
-                "source_metadata_license": LICENSE_EXPRESSION,
-            },
-            sort_keys=True,
-        )
-    )
+    print(json.dumps(result, sort_keys=True))
 
 
 if __name__ == "__main__":
