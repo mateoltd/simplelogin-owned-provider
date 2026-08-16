@@ -344,6 +344,7 @@ services:
       - abuser_hkdf_salt
       - admin_password
       - dkim_private_key
+      - openid_private_key
       - mail_edge_tenant_bearer
       - mail_edge_opaque_token_key
       - mail_edge_host_key_current
