@@ -34,14 +34,15 @@ license, and default web navigation links to the fork source. Run
 described below. The command now binds that bundle to the inspected local image
 ID and rootfs layers, rescans its exact Python, npm, Debian, executable, and
 native ELF inventories, and fails if the recorded inventory differs.
-The server image removes CPython's unused optional `_tkinter` extension because
-the pinned standalone interpreter otherwise carries unresolved Tcl/Tk edges.
-The application has no GUI path, and the native audit rejects any remaining
-unresolved shared-library dependency. The build also removes the standalone
-interpreter's bundled `pip`, `ensurepip`, `venv`, headers, configuration tools,
+The server image builds CPython 3.12.13 from the hash-pinned official source and
+dynamically links its optional compression, database, FFI, terminal, crypto,
+and XML modules to the inventoried Ubuntu libraries. This avoids the static
+third-party payload and missing LGPL relinking inputs in a stripped standalone
+interpreter. Tk is never built because the application has no GUI path. The
+build also removes `pip`, `ensurepip`, `venv`, headers, configuration tools,
 `2to3`, IDLE, and pydoc helpers. The audit searches every Python package root
-and executable location under `/opt` and the system roots instead of trusting
-`PATH` alone.
+and executable location under `/code`, `/opt`, and the system roots instead of
+trusting `PATH` alone, and rejects any unresolved shared-library dependency.
 
 ## Copyleft inventory on default paths
 

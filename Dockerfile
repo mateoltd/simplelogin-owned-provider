@@ -22,6 +22,8 @@ FROM --platform=linux/amd64 ${UBUNTU_IMAGE} AS python-builder
 ARG UBUNTU_SNAPSHOT="20260731T000000Z"
 ARG UV_VERSION="0.10.12"
 ARG UV_HASH="ec72570c9d1f33021aa80b176d7baba390de2cfeb1abcbefca346d563bf17484"
+ARG PYTHON_VERSION="3.12.13"
+ARG PYTHON_HASH="c08bc65a81971c1dd5783182826503369466c7e67374d1646519adf05207b684"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
@@ -36,24 +38,38 @@ RUN --mount=from=frontend,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/
     && sed -i "s/^deb /deb [snapshot=${UBUNTU_SNAPSHOT}] /" /etc/apt/sources.list \
     && apt-get -o APT::Update::Error-Mode=any update \
     && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates curl libpq-dev libre2-dev \
+        build-essential ca-certificates curl libbz2-dev libexpat1-dev \
+        libffi-dev libgdbm-compat-dev libgdbm-dev liblzma-dev libmpdec-dev \
+        libncurses-dev libpq-dev libreadline-dev libre2-dev libsqlite3-dev \
+        libssl-dev uuid-dev zlib1g-dev \
     && curl --fail --location --show-error --silent \
         "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
         --output /tmp/uv.tar.gz \
     && echo "${UV_HASH}  /tmp/uv.tar.gz" | sha256sum -c - \
     && tar --extract --gzip --file /tmp/uv.tar.gz --directory /tmp \
     && install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv \
-    && uv python install "$(cat .python-version)" \
-    && uv sync --locked --no-dev --no-install-project \
-    && python_root="/opt/uv-python/cpython-$(cat .python-version)-linux-x86_64-gnu" \
+    && test "$(cat .python-version)" = "$PYTHON_VERSION" \
+    && curl --fail --location --show-error --silent \
+        "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz" \
+        --output /tmp/python.tar.xz \
+    && echo "${PYTHON_HASH}  /tmp/python.tar.xz" | sha256sum -c - \
+    && tar --extract --xz --file /tmp/python.tar.xz --directory /tmp \
+    && python_root="/opt/uv-python/cpython-${PYTHON_VERSION}-linux-x86_64-gnu" \
+    && cd "/tmp/Python-${PYTHON_VERSION}" \
+    && LDFLAGS="-Wl,-rpath,$python_root/lib" ./configure \
+        --prefix="$python_root" \
+        --disable-test-modules \
+        --enable-shared \
+        --with-ensurepip=no \
+        --with-system-expat \
+        --with-system-libmpdec \
+        --without-static-libpython \
+    && make -j2 \
+    && make install \
+    && cd /build \
+    && uv sync --locked --no-dev --no-install-project --no-managed-python \
+        --python "$python_root/bin/python3.12" \
     && rm -rf \
-        "$python_root/lib/itcl4.3.5" \
-        "$python_root/lib/tcl9" \
-        "$python_root/lib/tcl9.0" \
-        "$python_root/lib/thread3.0.4" \
-        "$python_root/lib/tk9.0" \
-        "$python_root/lib/libtcl9.0.so" \
-        "$python_root/lib/libtcl9tk9.0.so" \
         "$python_root/lib/python3.12/idlelib" \
         "$python_root/lib/python3.12/tkinter" \
         "$python_root/lib/python3.12/turtledemo" \
@@ -110,7 +126,9 @@ RUN --mount=from=frontend,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/
     && sed -i "s/^deb /deb [snapshot=${UBUNTU_SNAPSHOT}] /" /etc/apt/sources.list \
     && apt-get -o APT::Update::Error-Mode=any update \
     && apt-get install -y --no-install-recommends \
-        bash ca-certificates gnupg libre2-9 libpq5 tar \
+        bash ca-certificates gnupg libbz2-1.0 libexpat1 libffi8 \
+        libgdbm-compat4 libgdbm6 liblzma5 libmpdec3 libncursesw6 libpq5 \
+        libreadline8 libre2-9 libsqlite3-0 libssl3 libuuid1 tar zlib1g \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/cache/debconf/*
 
