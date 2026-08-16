@@ -50,3 +50,11 @@ def test_redact_removes_json_auth_fields_and_basic_credentials():
     assert "short-value" not in redacted
     assert "dXNlcjpwYXNz" not in redacted
     assert sensitive_kinds(redacted) == set()
+
+
+def test_redact_removes_ipv4_before_punctuation_and_port():
+    redacted = redact("peer=192.0.2.10:443 source=198.51.100.20: warning", [])
+
+    assert "192.0.2.10" not in redacted
+    assert "198.51.100.20" not in redacted
+    assert sensitive_kinds(redacted) == set()

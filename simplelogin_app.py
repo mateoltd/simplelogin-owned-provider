@@ -21,6 +21,7 @@ from flask_cors import cross_origin, CORS
 from flask_login import current_user
 from sentry_sdk.integrations.flask import FlaskIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app import build_info, config, constants
@@ -355,6 +356,12 @@ def setup_error_page(app):
             return jsonify(error="Method not allowed"), 405
         else:
             return render_template("error/405.html"), 405
+
+    @app.errorhandler(RequestEntityTooLarge)
+    def request_entity_too_large(e):
+        if request.path.startswith("/api/"):
+            return jsonify(error="Request too large"), 413
+        return e
 
     @app.errorhandler(Exception)
     def error_handler(e):
