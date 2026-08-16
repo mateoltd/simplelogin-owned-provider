@@ -49,6 +49,10 @@ build also removes `pip`, `ensurepip`, `venv`, headers, configuration tools,
 `2to3`, IDLE, and pydoc helpers. The audit searches every Python package root
 and executable location under `/code`, `/opt`, and the system roots instead of
 trusting `PATH` alone, and rejects any unresolved shared-library dependency.
+Source-built extension modules are deterministically stripped of debug paths
+and linker build IDs, and their installed-wheel `RECORD` hashes are recomputed
+before the runtime filesystem is normalized. Import-smoke bytecode and the
+non-runtime `ldconfig` auxiliary cache are removed from the conveyed layer.
 
 ## Copyleft inventory on default paths
 
