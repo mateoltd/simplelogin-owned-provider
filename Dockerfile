@@ -83,9 +83,11 @@ COPY --from=python-builder /opt/venv /opt/venv
 WORKDIR /code
 COPY LICENSE ./LICENSE
 COPY app ./app
+COPY events ./events
 COPY migrations ./migrations
 COPY templates ./templates
 COPY static ./static
+COPY local_data/paddle.key.pub ./local_data/paddle.key.pub
 COPY local_data/words.txt ./local_data/words.txt
 COPY alembic.ini cron.py email_handler.py event_listener.py init_app.py \
     job_runner.py maintenance_app.py monitoring.py newrelic.ini server.py \
@@ -105,8 +107,14 @@ RUN test -n "${OWNED_PROVIDER_SOURCE_COMMIT}" \
     && test ! -e /code/.owned-provider \
     && test ! -e /code/tests \
     && test ! -e /code/local_data/private-pgp.asc \
+    && test ! -e /code/local_data/public-pgp.asc \
     && test ! -e /code/local_data/jwtRS256.key \
+    && test ! -e /code/local_data/jwtRS256.key.pub \
+    && test ! -e /code/local_data/key.pem \
+    && test ! -e /code/local_data/cert.pem \
     && test ! -e /code/local_data/dkim.key \
+    && test ! -e /code/local_data/dkim.pub.key \
+    && test ! -e /code/local_data/email_tests \
     && test ! -e /code/local_data/test_words.txt \
     && test -z "$(find /code/static/upload -mindepth 1 -print -quit)"
 
