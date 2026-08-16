@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 EMAIL = re.compile(
     r"(?i)(?<![\w.+-])([\w.!#$%&'*+/=?^`{|}~-]+)@([a-z0-9.-]+\.[a-z]{2,})"
 )
-IPV4 = re.compile(r"(?<![\w:])(?:\d{1,3}\.){3}\d{1,3}(?![\w:])")
+IPV4 = re.compile(r"(?<![\w:.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 IPV6 = re.compile(
     r"(?<![0-9A-Fa-f:])(?:\[[0-9A-Fa-f:.%]+\]|[0-9A-Fa-f]*:[0-9A-Fa-f:.%]*)(?![0-9A-Fa-f:])"
 )
