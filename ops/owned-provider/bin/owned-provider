@@ -541,6 +541,7 @@ reload_restored_configuration() {
   export OWNED_PROVIDER_RUNTIME_DIR="$runtime_dir"
   export OWNED_PROVIDER_CONFIG_FILE="$config_file"
   export OWNED_PROVIDER_SOURCE_COMMIT="$owned_provider_commit"
+  export OWNED_PROVIDER_SOURCE_DATE_EPOCH="$owned_provider_source_epoch"
   export SIMPLELOGIN_UPSTREAM_COMMIT="$source_commit"
   if [[ "$restored_control_version" == 0 ]]; then
     python3 "$script_dir/scripts/mail_edge_config.py" "$runtime_dir/mail-edge.json"
