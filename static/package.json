@@ -4,17 +4,17 @@
   "description": "Open source email alias solution",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/simple-login/app.git"
+    "url": "git+https://github.com/mateoltd/simplelogin-owned-provider.git"
   },
   "keywords": [
     "email-alias"
   ],
   "author": "SimpleLogin",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "bugs": {
-    "url": "https://github.com/simple-login/app/issues"
+    "url": "https://github.com/mateoltd/simplelogin-owned-provider/issues"
   },
-  "homepage": "https://github.com/simple-login/app#readme",
+  "homepage": "https://github.com/mateoltd/simplelogin-owned-provider#readme",
   "dependencies": {
     "@sentry/browser": "^5.30.0",
     "bootbox": "^5.5.3",

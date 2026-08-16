@@ -8,6 +8,7 @@ config_file="${OWNED_PROVIDER_CONFIG_FILE:-$runtime_dir/config.env}"
 compose_file="$script_dir/compose.yml"
 project_name="simplelogin-owned-provider"
 source_commit="$(tr -d '[:space:]' <"$script_dir/UPSTREAM_COMMIT")"
+owned_provider_commit="$(git -C "$repository_root" rev-parse HEAD)"
 image="simplelogin-owned-provider:$source_commit"
 
 require() {
@@ -98,6 +99,7 @@ load_configuration() {
   fi
   export OWNED_PROVIDER_RUNTIME_DIR="$runtime_dir"
   export OWNED_PROVIDER_CONFIG_FILE="$config_file"
+  export OWNED_PROVIDER_SOURCE_COMMIT="$owned_provider_commit"
   export SIMPLELOGIN_UPSTREAM_COMMIT="$source_commit"
   python3 "$script_dir/scripts/mail_edge_config.py" "$runtime_dir/mail-edge.json"
   if [[ "${OWNED_PROVIDER_MAIL_EDGE_ENABLED:-0}" == "1" ]]; then
@@ -175,6 +177,10 @@ prepare_volumes() {
 }
 
 build_images() {
+  if [[ -n "$(git -C "$repository_root" status --porcelain --untracked-files=normal)" ]]; then
+    printf 'refusing to build: commit or remove source changes so OCI provenance is exact\n' >&2
+    return 1
+  fi
   compose --profile build build upstream-image
   compose build app
 }
@@ -501,6 +507,7 @@ reload_restored_configuration() {
   fi
   export OWNED_PROVIDER_RUNTIME_DIR="$runtime_dir"
   export OWNED_PROVIDER_CONFIG_FILE="$config_file"
+  export OWNED_PROVIDER_SOURCE_COMMIT="$owned_provider_commit"
   export SIMPLELOGIN_UPSTREAM_COMMIT="$source_commit"
   if [[ "$restored_control_version" == 0 ]]; then
     python3 "$script_dir/scripts/mail_edge_config.py" "$runtime_dir/mail-edge.json"
@@ -815,6 +822,11 @@ case "${1:-}" in
     run_status
     python3 "$script_dir/scripts/host_audit.py" \
       --repository "$repository_root" --runtime "$runtime_dir" --project "$project_name"
+    ;;
+  # @command distribution-audit           Audit packaged licenses, tools, and exact source provenance
+  distribution-audit)
+    python3 "$script_dir/scripts/distribution_audit.py" \
+      --repository "$repository_root" --image "$image"
     ;;
   # @command production-audit             Fail closed on unsafe production configuration
   production-audit)
