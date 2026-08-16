@@ -134,6 +134,7 @@ def main():
         "abuser_hkdf_salt",
         "admin_password",
         "dkim_private_key",
+        "openid_private_key",
         "backup_encryption_key",
     } | MAIL_EDGE_SECRET_NAMES
     for name in sorted(secret_names):
@@ -148,12 +149,14 @@ def main():
                 failures.append(f"secret must be 32 bytes encoded as hex: {name}")
             elif name == "admin_password" and len(value) < 20:
                 failures.append("operator password must contain at least 20 characters")
-            elif name == "dkim_private_key" and (
+            elif name in {"dkim_private_key", "openid_private_key"} and (
                 "PRIVATE KEY-----" not in value or len(value) < 1000
             ):
-                failures.append("DKIM private key is missing or malformed")
+                failures.append(f"{name} is missing or malformed")
             elif (
-                name not in HEX_SECRET_NAMES | {"admin_password", "dkim_private_key"}
+                name
+                not in HEX_SECRET_NAMES
+                | {"admin_password", "dkim_private_key", "openid_private_key"}
                 and len(value) < 32
             ):
                 failures.append(f"secret must contain at least 32 characters: {name}")

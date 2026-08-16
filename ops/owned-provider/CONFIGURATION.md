@@ -40,7 +40,9 @@ as `OWNED_PROVIDER_SMTP_RELAY_HOST`; the production audit rejects Mailpit.
 tokens, recovery codes, alias transfer, VERP, field encryption, MACs, abuse
 derivation, the initial operator password, DKIM, and backup encryption. They are
 mounted as files and loaded only at process start; they are not embedded in
-Compose environment metadata.
+Compose environment metadata. The OIDC token-signing RSA key is generated and
+mounted independently as well, so the tracked development key never enters the
+production image.
 
 The inventory also contains independent Mail Edge tenant bearer, opaque-token,
 current/previous callback verification, operator, and privileged-operator

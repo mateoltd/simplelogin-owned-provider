@@ -55,6 +55,7 @@ x-app: &app
     MAX_NB_EMAIL_FREE_PLAN: "5"
     SMTP_SIZE_LIMIT: ${OWNED_PROVIDER_SMTP_SIZE_LIMIT:-26214400}
     DKIM_PRIVATE_KEY_PATH: /run/secrets/dkim_private_key
+    OPENID_PRIVATE_KEY_PATH: /run/secrets/openid_private_key
     FLASK_SECRET_FILE: /run/secrets/flask_secret
     PARTNER_API_TOKEN_SECRET_FILE: /run/secrets/partner_api_token_secret
     RECOVERY_CODE_HMAC_SECRET_FILE: /run/secrets/recovery_code_hmac_secret
@@ -79,6 +80,7 @@ x-app: &app
     - mac_key_hex
     - abuser_hkdf_salt
     - dkim_private_key
+    - openid_private_key
     - mail_edge_tenant_bearer
     - mail_edge_opaque_token_key
     - mail_edge_host_key_current
@@ -237,6 +239,7 @@ services:
       - abuser_hkdf_salt
       - admin_password
       - dkim_private_key
+      - openid_private_key
       - mail_edge_tenant_bearer
       - mail_edge_opaque_token_key
       - mail_edge_host_key_current
@@ -418,6 +421,8 @@ secrets:
     file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/admin_password
   dkim_private_key:
     file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/dkim_private_key
+  openid_private_key:
+    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/openid_private_key
   mail_edge_tenant_bearer:
     file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_tenant_bearer
   mail_edge_opaque_token_key:

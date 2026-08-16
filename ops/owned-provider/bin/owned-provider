@@ -62,6 +62,11 @@ initialize_runtime() {
       2>/dev/null
     chmod 600 "$runtime_dir/secrets/dkim_private_key"
   fi
+  if [[ ! -f "$runtime_dir/secrets/openid_private_key" ]]; then
+    openssl genrsa -traditional -out "$runtime_dir/secrets/openid_private_key" 4096 \
+      2>/dev/null
+    chmod 600 "$runtime_dir/secrets/openid_private_key"
+  fi
 }
 
 load_env_file() {

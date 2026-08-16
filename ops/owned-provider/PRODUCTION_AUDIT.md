@@ -4,7 +4,7 @@
 
 - pinned official upstream lineage with an allowlisted operations overlay and
   hardened provider-neutral Mail Edge host boundary;
-- file-mounted independent secrets, PKCS#1 DKIM key, config fail-closed audit,
+- file-mounted independent secrets, PKCS#1 DKIM and OIDC signing keys, config fail-closed audit,
   unprivileged read-only application containers, dropped capabilities, resource
   limits, persistent state, and loopback-by-default publication;
 - arbitrary operator-owned alias/custom domains with idempotent lifecycle and
