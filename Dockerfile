@@ -83,8 +83,11 @@ COPY --from=python-builder /opt/venv /opt/venv
 WORKDIR /code
 COPY LICENSE ./LICENSE
 COPY app ./app
+COPY commands ./commands
 COPY events ./events
 COPY migrations ./migrations
+COPY monitor ./monitor
+COPY tasks ./tasks
 COPY templates ./templates
 COPY static ./static
 COPY local_data/paddle.key.pub ./local_data/paddle.key.pub
@@ -93,7 +96,9 @@ COPY alembic.ini cron.py email_handler.py event_listener.py init_app.py \
     job_runner.py maintenance_app.py monitoring.py newrelic.ini server.py \
     simplelogin_app.py wsgi.py ./
 COPY ops/owned-provider/entrypoint.sh ./ops/owned-provider/entrypoint.sh
+COPY ops/owned-provider/migrations ./ops/owned-provider/migrations
 COPY ops/owned-provider/scripts ./ops/owned-provider/scripts
+COPY ops/owned-provider/UPSTREAM_COMMIT ./ops/owned-provider/UPSTREAM_COMMIT
 COPY --from=frontend /code/static/node_modules /code/static/node_modules
 COPY --from=frontend /code/static/sentry.bundle.min.js /code/static/sentry.bundle.min.js
 
@@ -104,6 +109,13 @@ RUN test -n "${OWNED_PROVIDER_SOURCE_COMMIT}" \
         "${OWNED_PROVIDER_SOURCE_COMMIT}" "${SOURCE_DATE_EPOCH}" \
         > /code/app/build_info.py \
     && mkdir -p /code/static/upload \
+    && test -d /code/commands \
+    && test -d /code/events \
+    && test -d /code/monitor \
+    && test -d /code/tasks \
+    && test -d /code/ops/owned-provider/migrations \
+    && test -s /code/local_data/paddle.key.pub \
+    && test -s /code/ops/owned-provider/UPSTREAM_COMMIT \
     && test ! -e /code/.owned-provider \
     && test ! -e /code/tests \
     && test ! -e /code/local_data/private-pgp.asc \
