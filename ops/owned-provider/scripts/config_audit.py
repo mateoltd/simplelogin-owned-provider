@@ -18,7 +18,6 @@ from mail_edge_config import (
     build_mail_edge_document,
 )
 
-
 RESERVED_SUFFIXES = (".test", ".example", ".invalid", ".localhost")
 HEX_SECRET_NAMES = {
     "master_enc_key_hex",

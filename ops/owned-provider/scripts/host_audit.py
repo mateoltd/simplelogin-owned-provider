@@ -109,6 +109,7 @@ def main():
         "tests/test_owned_provider_logging.py",
         "tests/test_onboarding.py",
         "tests/test_pgp_utils.py",
+        "tests/test_server.py",
         "tests/test_smtp_socket_security.py",
         "tests/test_webauthn_utils.py",
         "tests/utils.py",
