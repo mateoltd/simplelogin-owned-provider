@@ -45,6 +45,21 @@ RUN --mount=from=frontend,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/
     && install -m 0755 /tmp/uv-x86_64-unknown-linux-gnu/uv /usr/local/bin/uv \
     && uv python install "$(cat .python-version)" \
     && uv sync --locked --no-dev --no-install-project \
+    && python_root="/opt/uv-python/cpython-$(cat .python-version)-linux-x86_64-gnu" \
+    && rm -rf \
+        "$python_root/lib/itcl4.3.5" \
+        "$python_root/lib/tcl9" \
+        "$python_root/lib/tcl9.0" \
+        "$python_root/lib/thread3.0.4" \
+        "$python_root/lib/tk9.0" \
+        "$python_root/lib/libtcl9.0.so" \
+        "$python_root/lib/libtcl9tk9.0.so" \
+        "$python_root/lib/python3.12/idlelib" \
+        "$python_root/lib/python3.12/tkinter" \
+        "$python_root/lib/python3.12/turtledemo" \
+        "$python_root/lib/python3.12/lib-dynload/_tkinter.cpython-312-x86_64-linux-gnu.so" \
+    && test -z "$(find "$python_root" \
+        \( -name '_tkinter*.so' -o -name 'libtcl9*.so' \) -print -quit)" \
     && find /opt/venv -type d -name __pycache__ -prune -exec rm -rf {} + \
     && find /opt/venv -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
     && rm -rf /root/.cache /tmp/uv*

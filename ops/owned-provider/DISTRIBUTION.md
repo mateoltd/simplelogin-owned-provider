@@ -34,6 +34,10 @@ license, and default web navigation links to the fork source. Run
 described below. The command now binds that bundle to the inspected local image
 ID and rootfs layers, rescans its exact Python, npm, Debian, executable, and
 native ELF inventories, and fails if the recorded inventory differs.
+The server image removes CPython's unused optional `_tkinter` extension because
+the pinned standalone interpreter otherwise carries unresolved Tcl/Tk edges.
+The application has no GUI path, and the native audit rejects any remaining
+unresolved shared-library dependency.
 
 ## Copyleft inventory on default paths
 
@@ -42,15 +46,15 @@ native ELF inventories, and fails if the recorded inventory differs.
 | Owned-provider and SimpleLogin fork | AGPL-3.0-only | Application code is loaded by every service and served over the network. | Keep the exact fork commit publicly retrievable, retain license/notices, and provide corresponding source including build and operations scripts. Network users must receive a clear source route. |
 | `intro.js 2.9.3` | AGPL-3.0 | Compiled frontend dependency served by normal pages. | Include its license and source in the corresponding-source/notices set. |
 | `qrious 4.0.2` | GPL-3.0 | Compiled frontend QR implementation used by MFA pages. | Include license and corresponding source for the distributed frontend artifact. |
-| `Unidecode 1.1.1` | GPL | Python runtime package used in application normalization paths. | Include license and corresponding source; treat it as runtime, not tooling. |
+| `Unidecode 1.1.2` | GPL | Python runtime package used in application normalization paths. | Include license and corresponding source; treat it as runtime, not tooling. |
 | GnuPG and supporting `libassuan`, `libgcrypt`, `libgpg-error` | GnuPG is GPL; supporting libraries are LGPL | `gpg` remains in the image and is the default PGP implementation when `USE_RUST_PGP` is false. | Include notices and matching source for the installed Ubuntu package versions. Preserve dynamic-link and relinking rights for LGPL libraries. |
 | GNU `tar` | GPL | Remains in the final image and is invoked by backup/export and restore. | Include its license and matching Ubuntu source when the image is conveyed. |
 | `psycopg2 2.9.12` | LGPL-3.0-or-later with OpenSSL exception | Core PostgreSQL client for every stateful service, built from source and dynamically linked to the inventoried Ubuntu `libpq`. | Include its exact source and license, trace every native dependency, and preserve dynamic replacement rights. |
 | `jwcrypto 1.5.8` | LGPL-3.0-or-later | Active OIDC/JWS runtime. | Retain its license/source and LGPL replacement/relinking rights. |
-| `chardet 3.0.4` | LGPL | Runtime transitive dependency used by mail/address parsing. | Add the upstream license and source to a conveyed artifact's notices/source set. |
+| `chardet 7.6.0` | LGPL | Runtime transitive dependency used by mail/address parsing. | Add the upstream license and source to a conveyed artifact's notices/source set. |
 | `crontab 0.22.8` | LGPL | Packaged through yacron, but no yacron service runs by default. | Still include license/source if conveying the image because the bytes are present. |
 | Ubuntu `libc6` | LGPL | Loaded by all image processes. | Retain notices and include the exact source selected by the pinned Ubuntu snapshot. |
-| `tld 0.12.6` | GPL/LGPL/MPL tri-license | Runtime mail/domain parsing dependency. | Select and record the MPL option for a conveyed build and retain its notice/source. |
+| `tld 0.13.2` | GPL/LGPL/MPL tri-license | Runtime mail/domain parsing dependency. | Select and record the MPL option for a conveyed build and retain its notice/source. |
 | `pylint`, `djlint`, `astroid`, Black, pytest, tqdm, virtualenv | GPL/LGPL/permissive development tools | No longer installed because production uses `uv sync --locked --no-dev`. | No production-image obligation for bytes that are absent. Source checkout development remains governed by each tool's license. |
 | `gcc`, Binutils, Git | GPL build tools | Build stages contain them; the final runtime policy rejects their packages and executables. | The executable image audit must prove they are absent. |
 
