@@ -71,6 +71,7 @@ ops/owned-provider/bin/owned-provider backup /backups/provider.opb
 ops/owned-provider/bin/owned-provider restore /backups/provider.opb
 ops/owned-provider/bin/owned-provider upstream-check
 ops/owned-provider/bin/owned-provider mail-edge-contract-check /path/to/mail-edge
+ops/owned-provider/bin/owned-provider distribution-audit
 ```
 
 Runbooks:
@@ -81,4 +82,7 @@ Runbooks:
 - [Disaster recovery](DISASTER_RECOVERY.md)
 - [Capacity and scaling](CAPACITY.md)
 - [Upstream drift and upgrades](UPSTREAM_SYNC.md)
+- [Mail Edge contract verification](MAIL_EDGE_VERIFICATION.md)
+- [Dependency advisory reachability](DEPENDENCY_AUDIT.md)
+- [Runtime and distribution licenses](DISTRIBUTION.md)
 - [Production readiness boundary](PRODUCTION_AUDIT.md)

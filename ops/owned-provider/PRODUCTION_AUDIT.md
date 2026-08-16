@@ -49,7 +49,13 @@ Software cannot truthfully provision or attest these without operator authority:
    public traffic change.
 9. A compatible external Mail Edge release, tenant credentials, host-signing
    keys, operator scopes, versioned object storage, KMS, PostgreSQL/queue
-   operations, provider qualifications, and its own backup/restore evidence.
+   operations, provider qualifications, its own backup/restore evidence, and
+   closure of the exact-SHA verification findings in
+   [MAIL_EDGE_VERIFICATION.md](MAIL_EDGE_VERIFICATION.md).
+10. Closure of the reachable dependency blockers in
+    [DEPENDENCY_AUDIT.md](DEPENDENCY_AUDIT.md), plus the notices, SBOM, and
+    corresponding-source package required by
+    [DISTRIBUTION.md](DISTRIBUTION.md) before any binary conveyance.
 
 `production-audit` validates local configuration; it does not claim these
 external controls exist. Do not deploy publicly until each has named evidence
