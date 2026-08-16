@@ -58,8 +58,30 @@ RUN --mount=from=frontend,source=/etc/ssl/certs/ca-certificates.crt,target=/tmp/
         "$python_root/lib/python3.12/tkinter" \
         "$python_root/lib/python3.12/turtledemo" \
         "$python_root/lib/python3.12/lib-dynload/_tkinter.cpython-312-x86_64-linux-gnu.so" \
+        "$python_root/include" \
+        "$python_root/lib/python3.12/ensurepip" \
+        "$python_root/lib/python3.12/lib2to3" \
+        "$python_root/lib/python3.12/pydoc_data" \
+        "$python_root/lib/python3.12/venv" \
+        "$python_root/lib/python3.12/site-packages/pip" \
+        "$python_root/lib/python3.12/site-packages/pip-26.0.1.dist-info" \
+    && rm -f \
+        "$python_root/bin/2to3" \
+        "$python_root/bin/2to3-3.12" \
+        "$python_root/bin/idle3" \
+        "$python_root/bin/idle3.12" \
+        "$python_root/bin/pip" \
+        "$python_root/bin/pip3" \
+        "$python_root/bin/pip3.12" \
+        "$python_root/bin/pydoc3" \
+        "$python_root/bin/pydoc3.12" \
+        "$python_root/bin/python3-config" \
+        "$python_root/bin/python3.12-config" \
+        "$python_root/lib/python3.12/pydoc.py" \
     && test -z "$(find "$python_root" \
-        \( -name '_tkinter*.so' -o -name 'libtcl9*.so' \) -print -quit)" \
+        \( -name '_tkinter*.so' -o -name 'libtcl9*.so' -o -name 'pip' \
+        -o -name 'pip3' -o -name 'pip3.12' -o -name 'ensurepip' \
+        -o -name 'Python.h' \) -print -quit)" \
     && find /opt/venv -type d -name __pycache__ -prune -exec rm -rf {} + \
     && find /opt/venv -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete \
     && rm -rf /root/.cache /tmp/uv*

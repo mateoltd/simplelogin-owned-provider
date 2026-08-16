@@ -1835,13 +1835,38 @@ class DockerImageInspector:
     def inspect_runtime(
         self, image: str, policy: DistributionPolicy, *, native_complete: bool
     ) -> RuntimeInventory:
+        python_scanner = textwrap.dedent(r"""
+            import importlib.metadata as metadata
+            import json
+            import os
+            import re
+
+            search_paths = set()
+            for root in ("/code", "/opt", "/usr/local/lib", "/usr/lib"):
+                if not os.path.isdir(root):
+                    continue
+                for directory, subdirs, _files in os.walk(root, followlinks=False):
+                    if os.path.basename(directory) == "site-packages":
+                        search_paths.add(directory)
+                        subdirs[:] = []
+
+            distributions = list(metadata.distributions())
+            for path in sorted(search_paths):
+                distributions.extend(metadata.distributions(path=[path]))
+            installed = {
+                re.sub(r"[-_.]+", "-", distribution.metadata["Name"]).lower()
+                + "=="
+                + distribution.version
+                for distribution in distributions
+                if distribution.metadata["Name"]
+            }
+            print(json.dumps(sorted(installed)))
+            """).strip()
         python_output = self._container_command(
             image,
             RUNTIME_PYTHON,
             "-c",
-            "import importlib.metadata as m,json,re; "
-            "print(json.dumps(sorted({re.sub(r'[-_.]+','-',d.metadata['Name']).lower()+'=='+d.version "
-            "for d in m.distributions() if d.metadata['Name']})))",
+            python_scanner,
         )
         debian_output = self._container_command(
             image,
@@ -1888,13 +1913,25 @@ class DockerImageInspector:
         executable_probe = (
             canonical_json(sorted(policy.forbidden_executables)).decode().strip()
         )
+        executable_scanner = textwrap.dedent(r"""
+            import json
+            import os
+            import sys
+
+            candidates = set(json.loads(sys.argv[1]))
+            installed = set()
+            for root in ("/bin", "/code", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local", "/opt"):
+                if not os.path.isdir(root):
+                    continue
+                for directory, _subdirs, files in os.walk(root, followlinks=False):
+                    installed.update(candidates.intersection(files))
+            print(json.dumps(sorted(installed)))
+            """).strip()
         executable_output = self._container_command(
             image,
             RUNTIME_PYTHON,
             "-c",
-            "import json,shutil,sys; "
-            "print(json.dumps([name for name in json.loads(sys.argv[1]) "
-            "if shutil.which(name)]))",
+            executable_scanner,
             executable_probe,
         )
         return RuntimeInventory(
