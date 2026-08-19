@@ -36,6 +36,11 @@ The audit scans recent container output for every mounted secret value; Mail
 Edge callback logs contain only stable operation, status, duration, and safe
 error codes.
 
+`up` stops secret-consuming roles before refreshing their project-scoped
+read-only secret volumes. The audit verifies UID 65532, mode 0400, read access,
+and isolation of database and operator material. Rotate the mode-0600 host
+source, then run `up`; never edit the staged volumes directly.
+
 ```sh
 ops/owned-provider/bin/owned-provider logs
 ```

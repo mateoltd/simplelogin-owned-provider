@@ -46,10 +46,16 @@ as `OWNED_PROVIDER_SMTP_RELAY_HOST`; the production audit rejects Mailpit.
 `init` creates independent secrets for PostgreSQL, Flask sessions, partner API
 tokens, recovery codes, alias transfer, VERP, field encryption, MACs, abuse
 derivation, the initial operator password, DKIM, and backup encryption. They are
-mounted as files and loaded only at process start; they are not embedded in
-Compose environment metadata. The OIDC token-signing RSA key is generated and
+loaded only from files and are not embedded in Compose environment metadata.
+The CLI rejects symlinks or modes other than 0600, then uses a network-isolated
+helper to copy an explicit allowlist into project-scoped volumes as UID 65532,
+mode 0400. Services mount those volumes read-only. PostgreSQL sees only its
+password, ordinary application roles cannot see the operator password, and the
+host originals stay mode 0600. The OIDC token-signing RSA key is generated and
 mounted independently as well, so the tracked development key never enters the
-production image.
+production image. The rendered Mail Edge configuration uses the same staging
+boundary in a separate read-only volume. Staged volumes are regenerated during
+start and restore; they are not an additional backup authority.
 
 The inventory also contains independent Mail Edge tenant bearer, opaque-token,
 current/previous callback verification, operator, and privileged-operator

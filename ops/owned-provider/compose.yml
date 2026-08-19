@@ -35,7 +35,7 @@ x-app: &app
     DB_NAME: simplelogin
     DB_USER: simplelogin
     DB_CONN_NAME: simplelogin-owned-provider
-    DB_PASSWORD_FILE: /run/secrets/postgres_password
+    DB_PASSWORD_FILE: /run/database-secrets/postgres_password
     MEM_STORE_URI: redis://redis:6379/0
     POSTFIX_SERVER: ${OWNED_PROVIDER_SMTP_RELAY_HOST:-mailpit}
     POSTFIX_BACKUP_SERVERS: ${OWNED_PROVIDER_SMTP_BACKUP_RELAYS:-}
@@ -67,28 +67,25 @@ x-app: &app
     MAIL_EDGE_CONFIG_PATH: ${OWNED_PROVIDER_MAIL_EDGE_CONFIG_PATH:-}
     HOME: /tmp
     PYTHONPATH: /code
-  secrets: &app_secrets
-    - postgres_password
-    - flask_secret
-    - partner_api_token_secret
-    - recovery_code_hmac_secret
-    - alias_transfer_token_secret
-    - verp_email_secret
-    - master_enc_key_hex
-    - mac_key_hex
-    - abuser_hkdf_salt
-    - dkim_private_key
-    - openid_private_key
-    - mail_edge_tenant_bearer
-    - mail_edge_opaque_token_key
-    - mail_edge_host_key_current
-    - mail_edge_host_key_previous
-    - mail_edge_operator_bearer
-    - mail_edge_privileged_operator_bearer
-  configs: &app_configs
-    - source: mail_edge_host_config
-      target: /run/mail-edge/config.json
   volumes: &app_volumes
+    - type: volume
+      source: database-secrets
+      target: /run/database-secrets
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: application-secrets
+      target: /run/secrets
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: runtime-config
+      target: /run/mail-edge
+      read_only: true
+      volume:
+        nocopy: true
     - type: volume
       source: uploads
       target: /code/static/upload
@@ -117,6 +114,49 @@ x-app: &app
     nofile:
       soft: 8192
       hard: 8192
+
+x-app-operator: &app_operator
+  <<: *app
+  volumes:
+    - type: volume
+      source: database-secrets
+      target: /run/database-secrets
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: application-secrets
+      target: /run/secrets
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: operator-secrets
+      target: /run/operator-secrets
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: runtime-config
+      target: /run/mail-edge
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: uploads
+      target: /code/static/upload
+      volume:
+        nocopy: true
+    - type: volume
+      source: unsent
+      target: /code/var/unsent
+      volume:
+        nocopy: true
+    - type: volume
+      source: mail-edge-spool
+      target: /code/var/mail-edge-spool
+      volume:
+        nocopy: true
 
 services:
   upstream-image:
@@ -152,11 +192,15 @@ services:
     environment:
       POSTGRES_DB: simplelogin
       POSTGRES_USER: simplelogin
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-    secrets:
-      - postgres_password
+      POSTGRES_PASSWORD_FILE: /run/database-secrets/postgres_password
     volumes:
       - postgres:/var/lib/postgresql/data
+      - type: volume
+        source: database-secrets
+        target: /run/database-secrets
+        read_only: true
+        volume:
+          nocopy: true
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U simplelogin -d simplelogin"]
       interval: 2s
@@ -232,30 +276,11 @@ services:
     command: ["python", "ops/owned-provider/scripts/ops_migrate.py"]
 
   bootstrap:
-    <<: *app
+    <<: *app_operator
     profiles: ["tools"]
     environment:
       <<: *app_environment
-      ADMIN_PASSWORD_FILE: /run/secrets/admin_password
-    secrets:
-      - postgres_password
-      - flask_secret
-      - partner_api_token_secret
-      - recovery_code_hmac_secret
-      - alias_transfer_token_secret
-      - verp_email_secret
-      - master_enc_key_hex
-      - mac_key_hex
-      - abuser_hkdf_salt
-      - admin_password
-      - dkim_private_key
-      - openid_private_key
-      - mail_edge_tenant_bearer
-      - mail_edge_opaque_token_key
-      - mail_edge_host_key_current
-      - mail_edge_host_key_previous
-      - mail_edge_operator_bearer
-      - mail_edge_privileged_operator_bearer
+      ADMIN_PASSWORD_FILE: /run/operator-secrets/admin_password
     command: ["python", "ops/owned-provider/scripts/bootstrap.py"]
 
   app:
@@ -318,7 +343,7 @@ services:
       retries: 30
 
   e2e:
-    <<: *app
+    <<: *app_operator
     profiles: ["tools"]
     environment:
       <<: *app_environment
@@ -329,26 +354,7 @@ services:
       OWNED_PROVIDER_CUSTOM_DOMAIN: ${OWNED_PROVIDER_E2E_DOMAIN:-mask.example.org}
       OWNED_PROVIDER_E2E_DOMAIN: ${OWNED_PROVIDER_E2E_DOMAIN:-mask.example.org}
       OWNED_PROVIDER_E2E_MAILBOX_DOMAIN: ${OWNED_PROVIDER_E2E_MAILBOX_DOMAIN:-gmail.com}
-      ADMIN_PASSWORD_FILE: /run/secrets/admin_password
-    secrets:
-      - postgres_password
-      - flask_secret
-      - partner_api_token_secret
-      - recovery_code_hmac_secret
-      - alias_transfer_token_secret
-      - verp_email_secret
-      - master_enc_key_hex
-      - mac_key_hex
-      - abuser_hkdf_salt
-      - admin_password
-      - dkim_private_key
-      - openid_private_key
-      - mail_edge_tenant_bearer
-      - mail_edge_opaque_token_key
-      - mail_edge_host_key_current
-      - mail_edge_host_key_previous
-      - mail_edge_operator_bearer
-      - mail_edge_privileged_operator_bearer
+      ADMIN_PASSWORD_FILE: /run/operator-secrets/admin_password
     command: ["python", "ops/owned-provider/scripts/e2e.py"]
     depends_on:
       app:
@@ -376,32 +382,14 @@ services:
         condition: service_healthy
 
   synthetic:
-    <<: *app
+    <<: *app_operator
     restart: unless-stopped
     environment:
       <<: *app_environment
       OWNED_PROVIDER_BASE_URL: http://app:7777
       OWNED_PROVIDER_SMTP_HOST: email
       OWNED_PROVIDER_SMTP_PORT: "20381"
-      ADMIN_PASSWORD_FILE: /run/secrets/admin_password
-    secrets:
-      - postgres_password
-      - flask_secret
-      - partner_api_token_secret
-      - recovery_code_hmac_secret
-      - alias_transfer_token_secret
-      - verp_email_secret
-      - master_enc_key_hex
-      - mac_key_hex
-      - abuser_hkdf_salt
-      - admin_password
-      - dkim_private_key
-      - mail_edge_tenant_bearer
-      - mail_edge_opaque_token_key
-      - mail_edge_host_key_current
-      - mail_edge_host_key_previous
-      - mail_edge_operator_bearer
-      - mail_edge_privileged_operator_bearer
+      ADMIN_PASSWORD_FILE: /run/operator-secrets/admin_password
     command: ["python", "ops/owned-provider/scripts/log_wrapper.py", "--service", "synthetic", "--", "python", "ops/owned-provider/scripts/synthetic_probe.py", "--loop-seconds", "${OWNED_PROVIDER_SYNTHETIC_INTERVAL_SECONDS:-300}"]
     depends_on:
       app:
@@ -409,49 +397,11 @@ services:
       email:
         condition: service_healthy
 
-secrets:
-  postgres_password:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR:?run owned-provider init}/secrets/postgres_password
-  flask_secret:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/flask_secret
-  partner_api_token_secret:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/partner_api_token_secret
-  recovery_code_hmac_secret:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/recovery_code_hmac_secret
-  alias_transfer_token_secret:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/alias_transfer_token_secret
-  verp_email_secret:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/verp_email_secret
-  master_enc_key_hex:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/master_enc_key_hex
-  mac_key_hex:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mac_key_hex
-  abuser_hkdf_salt:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/abuser_hkdf_salt
-  admin_password:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/admin_password
-  dkim_private_key:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/dkim_private_key
-  openid_private_key:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/openid_private_key
-  mail_edge_tenant_bearer:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_tenant_bearer
-  mail_edge_opaque_token_key:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_opaque_token_key
-  mail_edge_host_key_current:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_host_key_current
-  mail_edge_host_key_previous:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_host_key_previous
-  mail_edge_operator_bearer:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_operator_bearer
-  mail_edge_privileged_operator_bearer:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR}/secrets/mail_edge_privileged_operator_bearer
-
-configs:
-  mail_edge_host_config:
-    file: ${OWNED_PROVIDER_RUNTIME_DIR:?run owned-provider init}/mail-edge.json
-
 volumes:
+  database-secrets:
+  application-secrets:
+  operator-secrets:
+  runtime-config:
   postgres:
   redis:
   uploads:

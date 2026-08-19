@@ -160,6 +160,8 @@ def main():
 
     hardened = {}
     mail_edge_mounts = {}
+    secret_volume_mounts = {}
+    secret_file_access = {}
     writable_volume_paths = {}
     loopback_ports = True
     for container in inspected:
@@ -188,8 +190,77 @@ def main():
                     f"service {service} is not running hardened: {values}"
                 )
             destinations = {mount["Destination"] for mount in container["Mounts"]}
+            mounts_by_destination = {
+                mount["Destination"]: mount for mount in container["Mounts"]
+            }
+            expected_secret_mounts = {
+                "/run/database-secrets",
+                "/run/mail-edge",
+                "/run/secrets",
+            }
+            if service == "synthetic":
+                expected_secret_mounts.add("/run/operator-secrets")
+            missing_secret_mounts = expected_secret_mounts - destinations
+            unexpected_operator_mount = (
+                service != "synthetic" and "/run/operator-secrets" in destinations
+            )
+            writable_secret_mounts = {
+                destination
+                for destination in expected_secret_mounts
+                if destination in mounts_by_destination
+                and mounts_by_destination[destination]["RW"]
+            }
+            secret_volume_mounts[service] = {
+                "destinations": sorted(expected_secret_mounts & destinations),
+                "operator_isolated": not unexpected_operator_mount,
+                "read_only": not writable_secret_mounts,
+            }
+            if (
+                missing_secret_mounts
+                or unexpected_operator_mount
+                or writable_secret_mounts
+            ):
+                raise RuntimeError(
+                    f"service {service} has unsafe secret mounts: "
+                    f"missing={sorted(missing_secret_mounts)}, "
+                    f"operator_exposed={unexpected_operator_mount}, "
+                    f"writable={sorted(writable_secret_mounts)}"
+                )
+            expected_secret_files = [
+                "/run/database-secrets/postgres_password",
+                "/run/mail-edge/config.json",
+                "/run/secrets/flask_secret",
+            ]
+            if service == "synthetic":
+                expected_secret_files.append("/run/operator-secrets/admin_password")
+            file_access = json.loads(
+                command(
+                    "docker",
+                    "exec",
+                    container["Id"],
+                    "/opt/venv/bin/python",
+                    "-c",
+                    "import json, os, stat, sys; from pathlib import Path; "
+                    "print(json.dumps({path:{'owner':[Path(path).stat().st_uid,Path(path).stat().st_gid],"
+                    "'mode':oct(stat.S_IMODE(Path(path).stat().st_mode)),'readable':os.access(path,os.R_OK)} "
+                    "for path in sys.argv[1:]},sort_keys=True))",
+                    *expected_secret_files,
+                )
+            )
+            secret_file_access[service] = file_access
+            invalid_secret_files = {
+                path: values
+                for path, values in file_access.items()
+                if values
+                != {"owner": [65532, 65532], "mode": "0o400", "readable": True}
+            }
+            if invalid_secret_files:
+                raise RuntimeError(
+                    f"service {service} has unsafe secret files: "
+                    f"{invalid_secret_files}"
+                )
             mail_edge_mounts[service] = {
-                "config": "/run/mail-edge/config.json" in destinations,
+                "config": "/run/mail-edge" in destinations,
                 "spool": "/code/var/mail-edge-spool" in destinations,
             }
             if not all(mail_edge_mounts[service].values()):
@@ -231,6 +302,25 @@ def main():
         raise RuntimeError(f"hardened services not running: {sorted(missing_hardened)}")
     if not loopback_ports:
         raise RuntimeError("a published port is not bound to loopback")
+
+    postgres = next(
+        item
+        for item in inspected
+        if item["Config"]["Labels"].get("com.docker.compose.service") == "postgres"
+    )
+    postgres_mounts = {mount["Destination"]: mount for mount in postgres["Mounts"]}
+    if (
+        "/run/database-secrets" not in postgres_mounts
+        or postgres_mounts["/run/database-secrets"]["RW"]
+        or "/run/secrets" in postgres_mounts
+        or "/run/operator-secrets" in postgres_mounts
+    ):
+        raise RuntimeError("PostgreSQL secret volume is not least-privilege read-only")
+    secret_volume_mounts["postgres"] = {
+        "destinations": ["/run/database-secrets"],
+        "operator_isolated": True,
+        "read_only": True,
+    }
 
     leaked_logs = []
     pii_logs = {}
@@ -419,6 +509,8 @@ if leaks:
                 "secrets_absent_from_docker_metadata": True,
                 "loopback_only_ports": loopback_ports,
                 "hardened_services": hardened,
+                "secret_volume_mounts": secret_volume_mounts,
+                "secret_file_access": secret_file_access,
                 "mail_edge_mounts": mail_edge_mounts,
                 "writable_volume_paths": writable_volume_paths,
                 "secrets_absent_from_recent_logs": True,

@@ -6,7 +6,9 @@ The deployment owns PostgreSQL, including all four Mail Edge host projection
 tables, Redis AOF/RDB state, uploads, the unsent-mail spool, the rendered Mail
 Edge configuration, and every mounted service secret. The contained test also
 owns Mailpit state. The unlinked raw callback spool is ephemeral and is
-recreated empty. Production MTA queues, the external Mail Edge PostgreSQL and
+recreated empty. Read-only service secret volumes are derived from the restored
+mode-0600 control files and are recreated rather than backed up independently.
+Production MTA queues, the external Mail Edge PostgreSQL and
 object store, monitoring, and secrets-manager history are separate components
 and need coordinated native backup policies; this overlay must not pretend to
 own or restore them.
