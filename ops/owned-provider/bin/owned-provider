@@ -11,6 +11,26 @@ source_commit="$(tr -d '[:space:]' <"$script_dir/UPSTREAM_COMMIT")"
 owned_provider_commit="$(git -C "$repository_root" rev-parse HEAD)"
 owned_provider_source_epoch="$(git -C "$repository_root" show -s --format=%ct "$owned_provider_commit")"
 image="simplelogin-owned-provider:$owned_provider_commit"
+database_secret_names=(postgres_password)
+application_secret_names=(
+  flask_secret
+  partner_api_token_secret
+  recovery_code_hmac_secret
+  alias_transfer_token_secret
+  verp_email_secret
+  master_enc_key_hex
+  mac_key_hex
+  abuser_hkdf_salt
+  dkim_private_key
+  openid_private_key
+  mail_edge_tenant_bearer
+  mail_edge_opaque_token_key
+  mail_edge_host_key_current
+  mail_edge_host_key_previous
+  mail_edge_operator_bearer
+  mail_edge_privileged_operator_bearer
+)
+operator_secret_names=(admin_password)
 
 require() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -232,6 +252,113 @@ ensure_volume() {
   fi
 }
 
+stage_secret_volume() {
+  local logical_name="$1"
+  shift
+  local volume="${project_name}_${logical_name}"
+  local name path mode
+  ensure_volume "$volume" "$logical_name"
+  for name in "$@"; do
+    path="$runtime_dir/secrets/$name"
+    if [[ ! -f "$path" || -L "$path" ]]; then
+      printf 'required secret is not a regular file: %s\n' "$name" >&2
+      return 1
+    fi
+    mode="$(stat --format '%a' "$path")"
+    if [[ "$mode" != 600 ]]; then
+      printf 'secret %s has mode %s, expected 600\n' "$name" "$mode" >&2
+      return 1
+    fi
+  done
+  docker run --rm --platform linux/amd64 --user 0 --network none --read-only \
+    --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+    --security-opt no-new-privileges:true \
+    --mount type=bind,source="$runtime_dir/secrets",target=/source,readonly \
+    --mount type=volume,source="$volume",target=/target,volume-nocopy \
+    --entrypoint sh "$image" -c '
+set -eu
+rm -f /target/*
+for extra in /target/.[!.]* /target/..?*; do
+  if [ -e "$extra" ] || [ -L "$extra" ]; then
+    echo "unexpected hidden entry in secret volume" >&2
+    exit 1
+  fi
+done
+for name do
+  cp "/source/$name" "/target/$name"
+  chown 65532:65532 "/target/$name"
+  chmod 0400 "/target/$name"
+done
+' owned-provider-secret-stage "$@"
+  docker run --rm --platform linux/amd64 --user 65532:65532 --network none \
+    --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+    --mount type=volume,source="$volume",target=/target,readonly,volume-nocopy \
+    --entrypoint sh "$image" -c '
+set -eu
+for name do
+  test -f "/target/$name"
+  test ! -L "/target/$name"
+  test -r "/target/$name"
+  test "$(stat -c %a "/target/$name")" = 400
+  test "$(stat -c %u:%g "/target/$name")" = 65532:65532
+done
+' owned-provider-secret-verify "$@"
+}
+
+stage_runtime_config() {
+  local source_path="$runtime_dir/mail-edge.json"
+  local logical_name=runtime-config
+  local volume="${project_name}_${logical_name}"
+  local mode
+  ensure_volume "$volume" "$logical_name"
+  if [[ ! -f "$source_path" || -L "$source_path" ]]; then
+    printf 'rendered Mail Edge configuration is not a regular file\n' >&2
+    return 1
+  fi
+  mode="$(stat --format '%a' "$source_path")"
+  if [[ "$mode" != 600 ]]; then
+    printf 'rendered Mail Edge configuration has mode %s, expected 600\n' \
+      "$mode" >&2
+    return 1
+  fi
+  docker run --rm --platform linux/amd64 --user 0 --network none --read-only \
+    --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER \
+    --security-opt no-new-privileges:true \
+    --mount type=bind,source="$source_path",target=/source,readonly \
+    --mount type=volume,source="$volume",target=/target,volume-nocopy \
+    --entrypoint sh "$image" -c '
+set -eu
+rm -f /target/*
+for extra in /target/.[!.]* /target/..?*; do
+  if [ -e "$extra" ] || [ -L "$extra" ]; then
+    echo "unexpected hidden entry in runtime config volume" >&2
+    exit 1
+  fi
+done
+cp /source /target/config.json
+chown 65532:65532 /target/config.json
+chmod 0400 /target/config.json
+'
+  docker run --rm --platform linux/amd64 --user 65532:65532 --network none \
+    --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+    --mount type=volume,source="$volume",target=/target,readonly,volume-nocopy \
+    --entrypoint sh "$image" -c '
+set -eu
+test -f /target/config.json
+test ! -L /target/config.json
+test -r /target/config.json
+test "$(stat -c %a /target/config.json)" = 400
+test "$(stat -c %u:%g /target/config.json)" = 65532:65532
+'
+}
+
+prepare_runtime_mounts() {
+  stage_secret_volume database-secrets "${database_secret_names[@]}"
+  stage_secret_volume application-secrets "${application_secret_names[@]}"
+  stage_secret_volume operator-secrets "${operator_secret_names[@]}"
+  stage_runtime_config
+}
+
 prepare_volumes() {
   ensure_volume "${project_name}_uploads" uploads
   ensure_volume "${project_name}_unsent" unsent
@@ -285,9 +412,10 @@ run_migrations() {
 }
 
 start_application() {
-  # A prior clean-machine drill may leave stopped containers whose secret bind
-  # sources belonged to the now-removed recovery runtime. Recreate these two
-  # stateful containers without touching their named volumes.
+  # Stop secret consumers before refreshing their isolated volume copies, then
+  # recreate stateful containers without touching their durable data volumes.
+  compose stop synthetic observer app email job-runner postgres >/dev/null
+  prepare_runtime_mounts
   compose up --detach --force-recreate postgres redis
   mail_store_up
   prepare_volumes
@@ -430,6 +558,7 @@ run_import() {
   if [[ -f "$state_dir/mail-store.tar" ]]; then
     ensure_volume "${project_name}_mailpit" mailpit
   fi
+  prepare_runtime_mounts
   compose up --detach --wait postgres
   compose exec --no-TTY postgres pg_restore \
     --username simplelogin --dbname simplelogin --clean --if-exists \
