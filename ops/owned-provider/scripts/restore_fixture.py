@@ -32,11 +32,13 @@ def message_exists(subject: str) -> bool:
 
 def put(redis_client: redis.Redis, marker: str, phase: str):
     Session.execute(
-        text("""
+        text(
+            """
         INSERT INTO owned_provider.restore_marker(marker, phase)
         VALUES (:marker, :phase)
         ON CONFLICT (marker) DO UPDATE SET phase=excluded.phase, created_at=clock_timestamp()
-        """),
+        """
+        ),
         {"marker": marker, "phase": phase},
     )
     Session.commit()

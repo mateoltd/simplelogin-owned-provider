@@ -42,20 +42,26 @@ def api(method, path, body=None, api_key=None, expected=(200,)):
 def record(success: bool, latency_ms: float, detail: dict):
     with create_light_app().app_context():
         Session.execute(
-            text("""
+            text(
+                """
             INSERT INTO owned_provider.probe_result(probe_name, success, latency_ms, detail)
             VALUES ('api-smtp', :success, :latency_ms, CAST(:detail AS jsonb))
-            """),
+            """
+            ),
             {
                 "success": success,
                 "latency_ms": latency_ms,
                 "detail": json.dumps(detail, sort_keys=True),
             },
         )
-        Session.execute(text("""
+        Session.execute(
+            text(
+                """
             DELETE FROM owned_provider.probe_result
             WHERE checked_at < clock_timestamp() - interval '30 days'
-            """))
+            """
+            )
+        )
         Session.commit()
 
 

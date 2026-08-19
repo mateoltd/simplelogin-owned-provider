@@ -18,13 +18,17 @@ def migrate() -> dict:
     Session.execute(text("SELECT pg_advisory_lock(:lock)"), {"lock": LOCK_ID})
     try:
         Session.execute(text("CREATE SCHEMA IF NOT EXISTS owned_provider"))
-        Session.execute(text("""
+        Session.execute(
+            text(
+                """
             CREATE TABLE IF NOT EXISTS owned_provider.schema_migration (
                 name text PRIMARY KEY,
                 sha256 text NOT NULL,
                 applied_at timestamptz NOT NULL DEFAULT clock_timestamp()
             )
-            """))
+            """
+            )
+        )
         Session.commit()
         applied = []
         for path in sorted(MIGRATIONS.glob("*.sql")):
