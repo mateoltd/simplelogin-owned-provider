@@ -13,6 +13,13 @@ pre-provision. Both are JSON arrays and may contain arbitrary operator-owned
 domains. `OWNED_PROVIDER_E2E_*` values belong only to the contained
 verification environment.
 
+The CLI derives `OWNED_PROVIDER_PROJECT_NAME` from the canonical repository and
+runtime paths unless an explicit validated name is configured. Compose-scoped
+containers, networks, configs, and volumes never use a global fixed name. Test
+port value `0` requests an independent Docker-assigned loopback port; use the
+`endpoints` command to discover it. Production audit requires every published
+port to be explicit and nonzero.
+
 `OWNED_PROVIDER_MAIL_EDGE_ENABLED=1` enables the provider-neutral Mail Edge
 host boundary. The CLI deterministically renders every
 `OWNED_PROVIDER_MAIL_EDGE_*` limit into the strict v1

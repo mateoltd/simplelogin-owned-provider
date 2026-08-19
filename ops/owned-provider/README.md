@@ -27,13 +27,21 @@ ops/owned-provider/bin/owned-provider drill
 
 `init` creates `.owned-provider/config.env`, a deterministic strict
 `.owned-provider/mail-edge.json`, plus independent mode-0600 secrets.
-All test ports bind to loopback, Mailpit captures outbound mail, and RFC-reserved
-example domains are used except for the configurable mailbox-domain MX lookup.
-Nothing publishes mail or changes DNS.
+Each runtime derives a collision-resistant Compose project namespace from its
+canonical repository and runtime paths. Containers, networks, configs, and
+volumes therefore remain private to that runtime. Test ports bind to loopback
+and default to Docker-assigned ports so parallel worktrees cannot collide;
+Mailpit captures outbound mail, and RFC-reserved example domains are used
+except for the configurable mailbox-domain MX lookup. Nothing publishes mail
+or changes DNS. After startup, print the exact endpoints with:
 
-Local endpoints are API `http://127.0.0.1:17777`, SMTP `127.0.0.1:20381`,
-readiness/metrics `http://127.0.0.1:19090`, and Mailpit
-`http://127.0.0.1:18025`.
+```sh
+ops/owned-provider/bin/owned-provider endpoints
+```
+
+Production uses explicit nonzero ports. An operator may also set a validated
+`OWNED_PROVIDER_PROJECT_NAME`; otherwise path-derived isolation remains the
+default.
 
 ## Production configuration
 

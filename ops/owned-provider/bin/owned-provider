@@ -6,7 +6,7 @@ repository_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
 runtime_dir="${OWNED_PROVIDER_RUNTIME_DIR:-$repository_root/.owned-provider}"
 config_file="${OWNED_PROVIDER_CONFIG_FILE:-$runtime_dir/config.env}"
 compose_file="$script_dir/compose.yml"
-project_name="simplelogin-owned-provider"
+project_name=
 source_commit="$(tr -d '[:space:]' <"$script_dir/UPSTREAM_COMMIT")"
 owned_provider_commit="$(git -C "$repository_root" rev-parse HEAD)"
 owned_provider_source_epoch="$(git -C "$repository_root" show -s --format=%ct "$owned_provider_commit")"
@@ -95,10 +95,23 @@ clear_configuration_environment() {
   unset SIMPLELOGIN_UPSTREAM_COMMIT
 }
 
+set_runtime_namespace() {
+  local -a arguments=(
+    --repository "$repository_root"
+    --runtime "$runtime_dir"
+  )
+  if [[ -n "${OWNED_PROVIDER_PROJECT_NAME:-}" ]]; then
+    arguments+=(--explicit "$OWNED_PROVIDER_PROJECT_NAME")
+  fi
+  project_name="$(python3 "$script_dir/scripts/runtime_namespace.py" "${arguments[@]}")"
+  export OWNED_PROVIDER_PROJECT_NAME="$project_name"
+}
+
 load_configuration() {
   initialize_runtime
   clear_configuration_environment
   load_env_file
+  set_runtime_namespace
   if [[ -n "${SIMPLELOGIN_UPSTREAM_COMMIT:-}" && "$SIMPLELOGIN_UPSTREAM_COMMIT" != "$source_commit" ]]; then
     printf 'configuration attempted to override the pinned upstream commit\n' >&2
     exit 1
@@ -129,6 +142,41 @@ compose() {
     docker compose --project-name "$project_name" --env-file "$config_file" \
       --file "$compose_file" "$@"
   fi
+}
+
+published_port() {
+  local service="$1"
+  local container_port="$2"
+  local mapping
+  mapping="$(compose port "$service" "$container_port")"
+  if [[ "$mapping" == *$'\n'* || ! "$mapping" =~ :([0-9]{1,5})$ ]] || \
+     ((10#${BASH_REMATCH[1]:-0} < 1 || 10#${BASH_REMATCH[1]:-0} > 65535)); then
+    printf 'cannot resolve one published port for %s:%s: %s\n' \
+      "$service" "$container_port" "$mapping" >&2
+    return 1
+  fi
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+service_url() {
+  local service="$1"
+  local container_port="$2"
+  local path="${3:-}"
+  local bind
+  case "$service" in
+    app) bind="${OWNED_PROVIDER_HTTP_BIND:-127.0.0.1}" ;;
+    observer) bind="${OWNED_PROVIDER_OBSERVER_BIND:-127.0.0.1}" ;;
+    *) bind=127.0.0.1 ;;
+  esac
+  case "$bind" in
+    0.0.0.0) bind=127.0.0.1 ;;
+    ::) bind=::1 ;;
+  esac
+  if [[ "$bind" == *:* && "$bind" != \[*\] ]]; then
+    bind="[$bind]"
+  fi
+  printf 'http://%s:%s%s\n' \
+    "$bind" "$(published_port "$service" "$container_port")" "$path"
 }
 
 is_test_mode() {
@@ -164,7 +212,19 @@ wait_for_url() {
 ensure_volume() {
   local volume="$1"
   local logical_name="$2"
-  if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+  if docker volume inspect "$volume" >/dev/null 2>&1; then
+    local labels
+    labels="$(
+      docker volume inspect --format \
+        '{{ index .Labels "com.docker.compose.project" }}:{{ index .Labels "com.docker.compose.volume" }}' \
+        "$volume"
+    )"
+    if [[ "$labels" != "$project_name:$logical_name" ]]; then
+      printf 'refusing volume outside this runtime namespace: %s (%s)\n' \
+        "$volume" "$labels" >&2
+      return 1
+    fi
+  else
     docker volume create \
       --label "com.docker.compose.project=$project_name" \
       --label "com.docker.compose.volume=$logical_name" \
@@ -173,13 +233,13 @@ ensure_volume() {
 }
 
 prepare_volumes() {
-  ensure_volume simplelogin-owned-provider_uploads uploads
-  ensure_volume simplelogin-owned-provider_unsent unsent
-  ensure_volume simplelogin-owned-provider_mail-edge-spool mail-edge-spool
+  ensure_volume "${project_name}_uploads" uploads
+  ensure_volume "${project_name}_unsent" unsent
+  ensure_volume "${project_name}_mail-edge-spool" mail-edge-spool
   local -a volume_mounts=(
-    --mount type=volume,source=simplelogin-owned-provider_uploads,target=/code/static/upload,volume-nocopy
-    --mount type=volume,source=simplelogin-owned-provider_unsent,target=/code/var/unsent,volume-nocopy
-    --mount type=volume,source=simplelogin-owned-provider_mail-edge-spool,target=/code/var/mail-edge-spool,volume-nocopy
+    --mount type=volume,source="${project_name}_uploads",target=/code/static/upload,volume-nocopy
+    --mount type=volume,source="${project_name}_unsent",target=/code/var/unsent,volume-nocopy
+    --mount type=volume,source="${project_name}_mail-edge-spool",target=/code/var/mail-edge-spool,volume-nocopy
   )
   docker run --rm --platform linux/amd64 --user 0 --entrypoint sh \
     "${volume_mounts[@]}" \
@@ -234,14 +294,13 @@ start_application() {
   run_migrations
   compose --profile tools run --rm bootstrap
   compose up --detach --force-recreate app email job-runner
-  wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT:-17777}/health"
+  wait_for_url "$(service_url app 7777 /health)"
   compose up --detach --force-recreate observer synthetic
-  wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_OBSERVER_PORT:-19090}/readyz"
+  wait_for_url "$(service_url observer 9090 /readyz)"
 }
 
 run_status() {
-  curl --silent --show-error --fail \
-    "http://127.0.0.1:${OWNED_PROVIDER_OBSERVER_PORT:-19090}/readyz"
+  curl --silent --show-error --fail "$(service_url observer 9090 /readyz)"
   compose --profile tools run --rm --no-deps \
     -e OWNED_PROVIDER_BASE_URL=http://app:7777 \
     app python ops/owned-provider/scripts/operational_check.py
@@ -270,9 +329,9 @@ restart_after_checkpoint() {
   compose up --detach postgres redis >/dev/null
   mail_store_up >/dev/null
   compose up --detach app email job-runner >/dev/null
-  wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT:-17777}/health"
+  wait_for_url "$(service_url app 7777 /health)"
   compose up --detach observer synthetic >/dev/null
-  wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_OBSERVER_PORT:-19090}/readyz"
+  wait_for_url "$(service_url observer 9090 /readyz)"
 }
 
 run_export() {
@@ -300,12 +359,12 @@ run_export() {
   checkpoint="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   compose stop postgres redis >/dev/null
   mail_store_stop >/dev/null
-  archive_volume simplelogin-owned-provider_uploads "$output/uploads.tar"
-  archive_volume simplelogin-owned-provider_unsent "$output/unsent.tar"
-  archive_volume simplelogin-owned-provider_redis "$output/redis.tar"
+  archive_volume "${project_name}_uploads" "$output/uploads.tar"
+  archive_volume "${project_name}_unsent" "$output/unsent.tar"
+  archive_volume "${project_name}_redis" "$output/redis.tar"
   local components='["postgres","redis","uploads","unsent","mail-edge-host-projections"]'
   if is_test_mode; then
-    archive_volume simplelogin-owned-provider_mailpit "$output/mail-store.tar"
+    archive_volume "${project_name}_mailpit" "$output/mail-store.tar"
     components='["postgres","redis","uploads","unsent","mail-store","mail-edge-host-projections"]'
   fi
   {
@@ -364,22 +423,22 @@ run_import() {
     fi
   fi
   compose down --volumes --remove-orphans
-  ensure_volume simplelogin-owned-provider_uploads uploads
-  ensure_volume simplelogin-owned-provider_unsent unsent
-  ensure_volume simplelogin-owned-provider_redis redis
-  ensure_volume simplelogin-owned-provider_mail-edge-spool mail-edge-spool
+  ensure_volume "${project_name}_uploads" uploads
+  ensure_volume "${project_name}_unsent" unsent
+  ensure_volume "${project_name}_redis" redis
+  ensure_volume "${project_name}_mail-edge-spool" mail-edge-spool
   if [[ -f "$state_dir/mail-store.tar" ]]; then
-    ensure_volume simplelogin-owned-provider_mailpit mailpit
+    ensure_volume "${project_name}_mailpit" mailpit
   fi
   compose up --detach --wait postgres
   compose exec --no-TTY postgres pg_restore \
     --username simplelogin --dbname simplelogin --clean --if-exists \
     --no-owner --no-acl <"$state_dir/database.dump"
-  restore_volume simplelogin-owned-provider_uploads uploads "$state_dir/uploads.tar"
-  restore_volume simplelogin-owned-provider_unsent unsent "$state_dir/unsent.tar"
-  restore_volume simplelogin-owned-provider_redis redis "$state_dir/redis.tar"
+  restore_volume "${project_name}_uploads" uploads "$state_dir/uploads.tar"
+  restore_volume "${project_name}_unsent" unsent "$state_dir/unsent.tar"
+  restore_volume "${project_name}_redis" redis "$state_dir/redis.tar"
   if [[ -f "$state_dir/mail-store.tar" ]]; then
-    restore_volume simplelogin-owned-provider_mailpit mailpit "$state_dir/mail-store.tar"
+    restore_volume "${project_name}_mailpit" mailpit "$state_dir/mail-store.tar"
   fi
   prepare_volumes
   compose up --detach redis
@@ -402,9 +461,9 @@ run_import() {
   fi
   run_migrations
   compose up --detach app email job-runner
-  wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT:-17777}/health"
+  wait_for_url "$(service_url app 7777 /health)"
   compose up --detach observer synthetic
-  wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_OBSERVER_PORT:-19090}/readyz"
+  wait_for_url "$(service_url observer 9090 /readyz)"
   run_status >/dev/null
   printf '{"database_sha256":"%s","state_import":"ok"}\n' "$actual"
 }
@@ -534,6 +593,7 @@ restore_control() {
 reload_restored_configuration() {
   clear_configuration_environment
   load_env_file
+  set_runtime_namespace
   if [[ -n "${SIMPLELOGIN_UPSTREAM_COMMIT:-}" && "$SIMPLELOGIN_UPSTREAM_COMMIT" != "$source_commit" ]]; then
     printf 'restored configuration differs from the pinned upstream commit\n' >&2
     return 1
@@ -605,7 +665,7 @@ run_restart_drill() {
     return 1
   fi
   compose restart app email job-runner >/dev/null
-  wait_for_url "http://127.0.0.1:${OWNED_PROVIDER_OBSERVER_PORT:-19090}/readyz"
+  wait_for_url "$(service_url observer 9090 /readyz)"
   run_post_restore
 }
 
@@ -633,6 +693,18 @@ run_mail_edge_restore_probe() {
   compose --profile tools run --rm --no-deps \
     -e MAIL_EDGE_CONFIG_PATH=/run/mail-edge/config.json \
     e2e python ops/owned-provider/scripts/mail_edge_restore_probe.py "$@"
+}
+
+run_restore_fixture_verify() {
+  if ! is_test_mode; then
+    printf 'the restore fixture is restricted to contained test mode\n' >&2
+    return 1
+  fi
+  local marker="${1:?restore fixture verification requires a marker}"
+  local expected="${2:?restore fixture verification requires an expectation}"
+  compose --profile tools run --rm --no-deps e2e \
+    python ops/owned-provider/scripts/restore_fixture.py verify \
+      "$marker" --expected "$expected"
 }
 
 run_drill() {
@@ -667,10 +739,16 @@ run_drill() {
     unset OWNED_PROVIDER_CONFIG_FILE
     OWNED_PROVIDER_RUNTIME_DIR="$clean_runtime" "$0" restore "$backup" >/dev/null
   )
-  compose --profile tools run --rm --no-deps e2e \
-    python ops/owned-provider/scripts/restore_fixture.py verify "$checkpoint_marker" --expected present >/dev/null
-  compose --profile tools run --rm --no-deps e2e \
-    python ops/owned-provider/scripts/restore_fixture.py verify "$after_marker" --expected absent >/dev/null
+  (
+    unset OWNED_PROVIDER_CONFIG_FILE
+    OWNED_PROVIDER_RUNTIME_DIR="$clean_runtime" "$0" restore-fixture-verify \
+      "$checkpoint_marker" present >/dev/null
+  )
+  (
+    unset OWNED_PROVIDER_CONFIG_FILE
+    OWNED_PROVIDER_RUNTIME_DIR="$clean_runtime" "$0" restore-fixture-verify \
+      "$after_marker" absent >/dev/null
+  )
   (
     unset OWNED_PROVIDER_CONFIG_FILE
     OWNED_PROVIDER_RUNTIME_DIR="$clean_runtime" "$0" post-restore >/dev/null
@@ -745,8 +823,10 @@ run_upstream_check() {
 run_mail_edge_contract_check() {
   local contract_repository="${1:?mail-edge-contract-check requires the Mail Edge repository}"
   contract_repository="$(cd "$contract_repository" && pwd)"
-  local expected actual stamp log_file result
+  local expected evidence actual parent changed expected_changed
+  local stamp log_file temporary temporary_quoted key_id result
   expected="$(tr -d '[:space:]' <"$script_dir/MAIL_EDGE_CONTRACT_COMMIT")"
+  evidence="$(tr -d '[:space:]' <"$script_dir/MAIL_EDGE_EVIDENCE_COMMIT")"
   actual="$(git -C "$contract_repository" rev-parse HEAD)"
   if [[ "$actual" != "$expected" ]]; then
     printf 'Mail Edge contract head mismatch: expected %s, got %s\n' "$expected" "$actual" >&2
@@ -756,23 +836,121 @@ run_mail_edge_contract_check() {
     printf 'Mail Edge contract worktree must be clean\n' >&2
     return 1
   fi
+  git -C "$contract_repository" cat-file -e "${evidence}^{commit}"
+  parent="$(git -C "$contract_repository" rev-parse "${evidence}^")"
+  if [[ "$parent" != "$expected" ]]; then
+    printf 'Mail Edge evidence is not the direct child of its source: %s != %s\n' \
+      "$parent" "$expected" >&2
+    return 1
+  fi
+  git -C "$contract_repository" merge-base --is-ancestor "$expected" "$evidence"
+  changed="$(
+    git -C "$contract_repository" diff-tree --no-commit-id --name-only -r \
+      "$expected" "$evidence" | LC_ALL=C sort
+  )"
+  expected_changed="$(printf '%s\n' \
+    test/scale/evidence/integration-w9/asset-validation.v1.json \
+    test/scale/evidence/integration-w9/formal-execution.v1.json \
+    test/scale/evidence/integration-w9/gate-receipts.v1.json \
+    test/scale/evidence/integration-w9/local-qualification.v1.json \
+    test/scale/evidence/integration-w9/production-drills/evidence.json \
+    test/scale/evidence/integration-w9/qualification-public.pem \
+    test/scale/evidence/integration-w9/qualification.signed.v1.json \
+    test/scale/evidence/integration-w9/qualification.v1.json | LC_ALL=C sort)"
+  if [[ "$changed" != "$expected_changed" ]]; then
+    printf 'Mail Edge evidence commit changed files outside the canonical evidence set:\n%s\n' \
+      "$changed" >&2
+    return 1
+  fi
   require corepack
+  require node
+  if [[ "$(node --version)" != "v24.19.0" ]]; then
+    printf 'Mail Edge qualification requires Node v24.19.0, got %s\n' \
+      "$(node --version)" >&2
+    return 1
+  fi
+  if [[ ! -x "$repository_root/.venv/bin/python3" ]]; then
+    printf 'Mail Edge host interoperability requires %s/.venv/bin/python3\n' \
+      "$repository_root" >&2
+    return 1
+  fi
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   log_file="$runtime_dir/evidence/mail-edge-contract-$stamp.log"
+  temporary="$(mktemp -d "$runtime_dir/evidence/.mail-edge-evidence.XXXXXX")"
+  printf -v temporary_quoted '%q' "$temporary"
+  trap "rm -rf -- $temporary_quoted" EXIT
+  while IFS= read -r path; do
+    mkdir -p "$temporary/$(dirname "$path")"
+    git -C "$contract_repository" show "$evidence:$path" >"$temporary/$path"
+  done <<<"$expected_changed"
+  local evidence_directory="$temporary/test/scale/evidence/integration-w9"
+  key_id="$(
+    "$repository_root/.venv/bin/python3" -c \
+      'import json,sys; print(json.load(open(sys.argv[1]))["signature"]["keyId"])' \
+      "$evidence_directory/qualification.signed.v1.json"
+  )"
   set +e
   (
     cd "$contract_repository"
-    corepack pnpm --filter @mail-edge/reference-service... build
-    corepack pnpm reference-service:e2e
+    set +e
+    failures=0
+    run_gate() {
+      printf '\n[gate] %s\n' "$*"
+      "$@"
+      status=$?
+      if [[ "$status" -ne 0 ]]; then
+        printf '[gate-failed:%s] %s\n' "$status" "$*"
+        failures=$((failures + 1))
+      fi
+    }
+    corepack pnpm install --frozen-lockfile || exit $?
+    run_gate corepack pnpm --filter @mail-edge/w9-scale-qualification build
+    run_gate node test/scale/dist/cli.js verify \
+      --input "$evidence_directory/qualification.signed.v1.json" \
+      --public-key "$evidence_directory/qualification-public.pem" \
+      --key-id "$key_id"
+    run_gate "$repository_root/.venv/bin/python3" \
+      "$script_dir/scripts/mail_edge_evidence.py" \
+      --directory "$evidence_directory" \
+      --source-sha "$expected" \
+      --evidence-sha "$evidence"
+    run_gate env \
+      "PATH=$repository_root/.venv/bin:$PATH" \
+      "MAIL_EDGE_SIMPLELOGIN_BASELINE=$repository_root" \
+      corepack pnpm --filter @mail-edge/core exec vitest run --reporter verbose
+    run_gate corepack pnpm test:w2-integration
+    run_gate corepack pnpm reference-service:e2e
+    run_gate corepack pnpm reference-service:container
+    run_gate corepack pnpm run verify
+    exit "$failures"
   ) >"$log_file" 2>&1
   result=$?
   set -e
-  tail -80 "$log_file"
+  tail -120 "$log_file"
   if [[ "$result" -ne 0 ]]; then
     return "$result"
   fi
-  printf '{"contract_head":"%s","reference_service_e2e":"passed","log":"%s"}\n' \
-    "$actual" "$log_file"
+  if [[ -n "$(git -C "$contract_repository" status --porcelain)" ]]; then
+    printf 'Mail Edge verification changed its source worktree\n' >&2
+    return 1
+  fi
+  rm -rf -- "$temporary"
+  trap - EXIT
+  printf '{"contract_head":"%s","evidence_commit":"%s","evidence_signature":"passed","full_verify":"passed","host_interop":"passed","reference_service_container":"passed","reference_service_e2e":"passed","w2_integration":"passed","log":"%s"}\n' \
+    "$actual" "$evidence" "$log_file"
+}
+
+run_endpoints() {
+  local mailpit=null
+  if is_test_mode; then
+    mailpit="\"$(service_url mailpit 8025)\""
+  fi
+  printf '{"api":"%s","mailpit":%s,"metrics":"%s","project":"%s","smtp_port":%s}\n' \
+    "$(service_url app 7777)" \
+    "$mailpit" \
+    "$(service_url observer 9090)" \
+    "$project_name" \
+    "$(published_port email 20381)"
 }
 
 usage() {
@@ -801,8 +979,10 @@ case "${1:-}" in
     ;;
   # @command status                       Check readiness and durable state
   status) run_status ;;
+  # @command endpoints                    Print this runtime's loopback endpoints
+  endpoints) run_endpoints ;;
   # @command metrics                      Print Prometheus metrics
-  metrics) curl --silent --show-error --fail "http://127.0.0.1:${OWNED_PROVIDER_OBSERVER_PORT:-19090}/metrics" ;;
+  metrics) curl --silent --show-error --fail "$(service_url observer 9090 /metrics)" ;;
   # @command probe                        Run one alertable API and SMTP synthetic
   probe) compose --profile tools run --rm --no-deps e2e python ops/owned-provider/scripts/synthetic_probe.py ;;
   # @command socket-gate                  Reject HTTP smuggling, part bombs, and oversized SMTP input
@@ -812,8 +992,8 @@ case "${1:-}" in
       exit 1
     fi
     python3 "$script_dir/scripts/socket_security_probe.py" \
-      --http-port "${OWNED_PROVIDER_HTTP_PORT:-17777}" \
-      --smtp-port "${OWNED_PROVIDER_SMTP_PORT:-20381}" \
+      --http-port "$(published_port app 7777)" \
+      --smtp-port "$(published_port email 20381)" \
       --smtp-size-limit "${OWNED_PROVIDER_SMTP_SIZE_LIMIT:-26214400}"
     ;;
   # @command e2e                          Run real API and mail lifecycle tests
@@ -856,7 +1036,7 @@ case "${1:-}" in
   sdk-conformance)
     sdk_worktree="${2:?sdk-conformance requires the SDK laboratory worktree}"
     python3 "$script_dir/scripts/sdk_conformance.py" "$sdk_worktree" \
-      --base-url "http://127.0.0.1:${OWNED_PROVIDER_HTTP_PORT}" \
+      --base-url "$(service_url app 7777)" \
       --email "$OWNED_PROVIDER_ADMIN_EMAIL" \
       --password-file "$runtime_dir/secrets/admin_password" \
       --target-dir "$runtime_dir/sdk-target"
@@ -882,6 +1062,7 @@ case "${1:-}" in
   upstream-check) run_upstream_check ;;
   # @command mail-edge-contract-check DIR Verify and exercise the exact reference service contract
   mail-edge-contract-check) run_mail_edge_contract_check "${2:-}" ;;
+  restore-fixture-verify) run_restore_fixture_verify "${2:-}" "${3:-}" ;;
   # @command logs                         Follow structured provider logs
   logs) compose logs --follow --tail 200 app email job-runner observer synthetic postgres redis mailpit ;;
   # @command down                         Stop containers but retain data
