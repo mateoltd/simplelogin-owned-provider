@@ -124,22 +124,30 @@ def collect() -> dict:
                 )
                 or 0
             )
-            probe = Session.execute(text("""
+            probe = Session.execute(
+                text(
+                    """
                 SELECT success, extract(epoch FROM clock_timestamp() - checked_at)
                 FROM owned_provider.probe_result
                 WHERE probe_name='api-smtp'
                 ORDER BY checked_at DESC LIMIT 1
-                """)).first()
+                """
+                )
+            ).first()
             if probe:
                 result["synthetic"] = {
                     "success": bool(probe[0]),
                     "age_seconds": max(0.0, float(probe[1])),
                 }
-            backup = Session.execute(text("""
+            backup = Session.execute(
+                text(
+                    """
                 SELECT success, extract(epoch FROM clock_timestamp() - completed_at), size_bytes
                 FROM owned_provider.backup_result
                 ORDER BY completed_at DESC LIMIT 1
-                """)).first()
+                """
+                )
+            ).first()
             if backup:
                 result["backup"] = {
                     "success": bool(backup[0]),

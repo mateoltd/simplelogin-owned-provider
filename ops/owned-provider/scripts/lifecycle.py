@@ -30,11 +30,13 @@ def was_recorded(key: str) -> bool:
 
 def remember(key: str, operation: str, result: dict):
     Session.execute(
-        text("""
+        text(
+            """
         INSERT INTO owned_provider.operation(idempotency_key, operation, result)
         VALUES (:key, :operation, CAST(:result AS jsonb))
         ON CONFLICT (idempotency_key) DO NOTHING
-        """),
+        """
+        ),
         {"key": key, "operation": operation, "result": json.dumps(result)},
     )
     Session.commit()

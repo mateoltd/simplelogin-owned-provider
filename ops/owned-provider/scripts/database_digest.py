@@ -21,12 +21,16 @@ MAIL_EDGE_HOST_TABLES = frozenset(
 
 
 def digest_database(*, legacy_pre_mail_edge: bool = False) -> dict:
-    tables = Session.execute(text("""
+    tables = Session.execute(
+        text(
+            """
         SELECT table_schema, table_name
         FROM information_schema.tables
         WHERE table_type='BASE TABLE' AND table_schema IN ('public', 'owned_provider')
         ORDER BY table_schema, table_name
-        """)).fetchall()
+        """
+        )
+    ).fetchall()
     observed_mail_edge_tables = {
         table
         for schema, table in tables
@@ -70,12 +74,16 @@ def digest_database(*, legacy_pre_mail_edge: bool = False) -> dict:
         canonical = json.dumps(item, sort_keys=True, separators=(",", ":")).encode()
         overall.update(canonical + b"\n")
         table_results.append(item)
-    sequences = Session.execute(text("""
+    sequences = Session.execute(
+        text(
+            """
         SELECT schemaname, sequencename, coalesce(last_value::text, 'NULL')
         FROM pg_sequences
         WHERE schemaname IN ('public', 'owned_provider')
         ORDER BY schemaname, sequencename
-        """)).fetchall()
+        """
+        )
+    ).fetchall()
     sequence_rows = [list(item) for item in sequences]
     overall.update(
         json.dumps(sequence_rows, sort_keys=True, separators=(",", ":")).encode()

@@ -131,12 +131,14 @@ def log_pending_to_process_events():
 def log_events_pending_dead_letter():
     since = arrow.now().shift(minutes=-10).datetime
     r = Session.execute(
-        text("""
+        text(
+            """
         SELECT COUNT(*)
         FROM sync_event
         WHERE (taken_time IS NOT NULL AND taken_time < :since)
            OR (taken_time IS NULL AND created_at < :since)
-        """),
+        """
+        ),
         {"since": since},
     )
     events_pending = list(r)[0][0]
@@ -150,11 +152,13 @@ def log_events_pending_dead_letter():
 @newrelic.agent.background_task()
 def log_failed_events():
     r = Session.execute(
-        text("""
+        text(
+            """
         SELECT COUNT(*)
         FROM sync_event
         WHERE retry_count >= 10;
-        """),
+        """
+        ),
     )
     failed_events = list(r)[0][0]
 
@@ -174,14 +178,16 @@ def log_jobs_to_run():
 @newrelic.agent.background_task()
 def log_failed_jobs():
     r = Session.execute(
-        text("""
+        text(
+            """
         SELECT COUNT(*)
         FROM job
         WHERE (
             state = :error_state
             OR (state = :taken_state AND attempts >= :max_attempts)
         )
-        """),
+        """
+        ),
         {
             "error_state": JobState.error.value,
             "taken_state": JobState.taken.value,

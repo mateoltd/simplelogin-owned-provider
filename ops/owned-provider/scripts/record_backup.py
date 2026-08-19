@@ -17,10 +17,12 @@ def main():
     args = parser.parse_args()
     with create_light_app().app_context():
         Session.execute(
-            text("""
+            text(
+                """
             INSERT INTO owned_provider.backup_result(success, size_bytes, sha256)
             VALUES (true, :size, :sha256)
-            """),
+            """
+            ),
             {"size": args.size, "sha256": args.sha256},
         )
         Session.commit()

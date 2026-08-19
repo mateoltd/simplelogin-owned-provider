@@ -1787,7 +1787,8 @@ class ComplianceBundleVerifier:
 
 
 class CommandRunner(Protocol):
-    def run(self, args: Sequence[str]) -> str: ...
+    def run(self, args: Sequence[str]) -> str:
+        ...
 
 
 class SubprocessRunner:
@@ -1853,7 +1854,8 @@ class DockerImageInspector:
     def inspect_runtime(
         self, image: str, policy: DistributionPolicy, *, native_complete: bool
     ) -> RuntimeInventory:
-        python_scanner = textwrap.dedent(r"""
+        python_scanner = textwrap.dedent(
+            r"""
             import importlib.metadata as metadata
             import json
             import os
@@ -1879,7 +1881,8 @@ class DockerImageInspector:
                 if distribution.metadata["Name"]
             }
             print(json.dumps(sorted(installed)))
-            """).strip()
+            """
+        ).strip()
         python_output = self._container_command(
             image,
             RUNTIME_PYTHON,
@@ -1892,7 +1895,8 @@ class DockerImageInspector:
             "-c",
             "dpkg-query -W -f='${binary:Package}==${Version}\\n' | LC_ALL=C sort -u",
         )
-        npm_scanner = textwrap.dedent(r"""
+        npm_scanner = textwrap.dedent(
+            r"""
             import json
             import os
 
@@ -1926,12 +1930,14 @@ class DockerImageInspector:
                         raise SystemExit(f"incomplete installed npm package metadata: {directory}")
                     packages.add(f"{name}@{version}")
             print(json.dumps(sorted(packages)))
-            """).strip()
+            """
+        ).strip()
         npm_output = self._container_command(image, RUNTIME_PYTHON, "-c", npm_scanner)
         executable_probe = (
             canonical_json(sorted(policy.forbidden_executables)).decode().strip()
         )
-        executable_scanner = textwrap.dedent(r"""
+        executable_scanner = textwrap.dedent(
+            r"""
             import json
             import os
             import sys
@@ -1944,7 +1950,8 @@ class DockerImageInspector:
                 for directory, _subdirs, files in os.walk(root, followlinks=False):
                     installed.update(candidates.intersection(files))
             print(json.dumps(sorted(installed)))
-            """).strip()
+            """
+        ).strip()
         executable_output = self._container_command(
             image,
             RUNTIME_PYTHON,
@@ -1988,7 +1995,8 @@ class DockerImageInspector:
         return value
 
     def inspect_native(self, image: str) -> tuple[ObservedNativeRecord, ...]:
-        scanner = textwrap.dedent(r"""
+        scanner = textwrap.dedent(
+            r"""
             import hashlib
             import json
             import os
@@ -2068,7 +2076,8 @@ class DockerImageInspector:
                         raise SystemExit(f"unrecognized ldd output for {path}: {stripped}")
                 records.append({"dependencies": dependencies, "path": path, "sha256": digest})
             print(json.dumps(records, sort_keys=True, separators=(",", ":")))
-            """).strip()
+            """
+        ).strip()
         output = self._container_command(image, RUNTIME_PYTHON, "-c", scanner)
         raw = json.loads(output)
         records = tuple(
