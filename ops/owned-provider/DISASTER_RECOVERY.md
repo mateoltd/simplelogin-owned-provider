@@ -80,7 +80,9 @@ restore through their original release first; they are not guessed or coerced.
 5. Run DNS/MTA checks for the restored host before moving traffic.
 
 `drill` automates this with empty volumes and a newly initialized runtime. It
-writes checkpoint markers to PostgreSQL, Redis, uploads, the unsent spool, and
+writes the restored deployment into a distinct path-derived Compose namespace,
+so its containers and volumes cannot alias the source deployment. It writes
+checkpoint markers to PostgreSQL, Redis, uploads, the unsent spool, and
 the contained mail store, creates later markers, restores, proves checkpoint
 markers present and later markers absent, recreates the empty Mail Edge spool,
 and resumes API plus both mail directions. It also round-trips representative

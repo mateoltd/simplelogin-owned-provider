@@ -102,16 +102,21 @@ a worker liveness ceiling, not the Mail Edge HTTP or MIME deadline, and the
 ## Contract qualification
 
 `MAIL_EDGE_CONTRACT_COMMIT` pins the independently versioned reference-service
-contract qualified by this host. From a clean checkout at that exact SHA, run:
+source qualified by this host. `MAIL_EDGE_EVIDENCE_COMMIT` pins its signed,
+evidence-only child without changing the source pin. From a clean checkout at
+the exact source SHA, run:
 
 ```sh
 ops/owned-provider/bin/owned-provider mail-edge-contract-check /path/to/mail-edge
 ```
 
-The command refuses a dirty or different worktree, builds the reference service,
-and runs its real PostgreSQL/MinIO/provider-protocol E2E suite. It stores full
-output as evidence and prints only the tail. This is a compatibility gate, not
-permission to merge, deploy, activate a provider, or mutate DNS.
+The command refuses a dirty or different worktree, verifies evidence ancestry,
+scope, canonical digest, and signature, then runs direct host interoperability,
+real PostgreSQL/MinIO/provider-protocol E2E, OCI reproducibility, and the full
+Mail Edge source suite. It stores full output as evidence and prints only the
+tail. The evidence's `limited` status and stated external blockers remain
+binding. This is a compatibility gate, not permission to merge, deploy,
+activate a provider, or mutate DNS.
 
 ## Incident order
 

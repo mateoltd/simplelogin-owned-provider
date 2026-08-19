@@ -17,6 +17,7 @@ from mail_edge_config import (
     audit_mail_edge_document,
     build_mail_edge_document,
 )
+from runtime_namespace import validate_project_name
 
 RESERVED_SUFFIXES = (".test", ".example", ".invalid", ".localhost")
 HEX_SECRET_NAMES = {
@@ -55,6 +56,25 @@ def main():
     failures = []
     warnings = []
     mode = os.environ.get("OWNED_PROVIDER_MODE", "test")
+    try:
+        validate_project_name(os.environ["OWNED_PROVIDER_PROJECT_NAME"])
+    except (KeyError, ValueError):
+        failures.append("the effective Compose project namespace is invalid")
+    port_names = [
+        "OWNED_PROVIDER_HTTP_PORT",
+        "OWNED_PROVIDER_SMTP_PORT",
+        "OWNED_PROVIDER_OBSERVER_PORT",
+    ]
+    if mode == "test":
+        port_names.append("OWNED_PROVIDER_MAILPIT_HTTP_PORT")
+    for name in port_names:
+        try:
+            port = int(os.environ[name])
+            if not 0 <= port <= 65535 or (args.production and port == 0):
+                raise ValueError
+        except (KeyError, ValueError):
+            minimum = 1 if args.production else 0
+            failures.append(f"{name} must be a TCP port from {minimum} through 65535")
     url = urlparse(os.environ["OWNED_PROVIDER_URL"])
     alias_domains = json.loads(os.environ["OWNED_PROVIDER_ALIAS_DOMAINS"])
     custom_domains = json.loads(os.environ["OWNED_PROVIDER_CUSTOM_DOMAINS"])
