@@ -30,6 +30,9 @@ org.opencontainers.image.licenses=AGPL-3.0-only
 The build refuses a dirty worktree, so the revision is not a false mapping. It
 streams the exact commit through `git archive` for both Docker build contexts;
 checkout mtimes and ignored runtime state therefore cannot change the layers.
+The local build disables BuildKit's implicit time-varying attestation so two
+no-cache builds have one comparable image identity; reviewed provenance remains
+the OCI label set and the image-bound compliance bundle described below.
 `SOURCE_DATE_EPOCH` is the fork commit timestamp in the CPython builder and
 runtime image. The shipped filesystem is copied from a timestamp-normalized
 assembly stage into one scratch-image layer, fixing interpreter metadata,

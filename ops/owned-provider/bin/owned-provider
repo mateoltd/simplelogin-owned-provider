@@ -387,13 +387,13 @@ build_images() {
     return 1
   fi
   git -C "$repository_root" archive --format=tar "$initial_head" | \
-    docker buildx build --no-cache --platform linux/amd64 --load \
+    docker buildx build --no-cache --provenance=false --platform linux/amd64 --load \
       --build-arg "OWNED_PROVIDER_SOURCE_COMMIT=$owned_provider_commit" \
       --build-arg "SIMPLELOGIN_UPSTREAM_COMMIT=$source_commit" \
       --build-arg "SOURCE_DATE_EPOCH=$owned_provider_source_epoch" \
       --tag "$upstream_image" -
   git -C "$repository_root" archive --format=tar "$initial_head" | \
-    docker buildx build --no-cache --platform linux/amd64 --load \
+    docker buildx build --no-cache --provenance=false --platform linux/amd64 --load \
       --build-arg "BASE_IMAGE=$upstream_image" \
       --file ops/owned-provider/Dockerfile \
       --tag "$image" -
