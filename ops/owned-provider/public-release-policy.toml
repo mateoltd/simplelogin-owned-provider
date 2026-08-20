@@ -1,0 +1,96 @@
+format_version = 1
+bundle_format = "simplelogin-owned-provider-public-release"
+bundle_format_version = 1
+
+[repository]
+origin = "https://github.com/mateoltd/simplelogin-owned-provider.git"
+integration_branch = "integration/owned-provider-qualified-mail-edge"
+integration_commit = "1a236e00bc63e4125c4d175607b37f7f1e2061e6"
+release_branch = "fix/owned-provider-compliance-bundle"
+upstream_origin = "https://github.com/simple-login/app.git"
+upstream_commit_file = "ops/owned-provider/UPSTREAM_COMMIT"
+
+[mail_edge]
+origin = "https://github.com/mateoltd/mail-edge.git"
+default_commit_file = "ops/owned-provider/MAIL_EDGE_CONTRACT_COMMIT"
+evidence_commit_file = "ops/owned-provider/MAIL_EDGE_EVIDENCE_COMMIT"
+signed_evidence_status = "limited"
+
+[spdx]
+license_list_origin = "https://github.com/spdx/license-list-data.git"
+license_list_commit = "c4a7237ec8f4654e867546f9f409749300f1bf4c"
+license_list_tag = "v3.28.0"
+
+[distribution_scope]
+owned_provider_source_archive = "conveyed"
+mail_edge_source_archive = "conveyed"
+dependency_source_archives = "conveyed-when-copyleft-or-vendored"
+owned_provider_oci_image = "inspected-not-conveyed"
+mail_edge_oci_image = "not-conveyed"
+postgres_image = "referenced-not-conveyed"
+redis_image = "referenced-not-conveyed"
+mailpit_image = "referenced-not-conveyed"
+
+[limits]
+maximum_download_bytes = 536870912
+maximum_archive_members = 200000
+maximum_license_bytes = 2097152
+maximum_license_files_per_component = 256
+
+[license_overrides.python]
+"aiosmtpd@1.4.6" = "Apache-2.0"
+"crontab@0.22.8" = "LGPL-2.1-only OR LGPL-3.0-only"
+"dkimpy@1.0.5" = "Zlib"
+"phpserialize@1.3" = "BSD-3-Clause"
+"ply@3.11" = "BSD-3-Clause"
+"protobuf@7.35.1" = "BSD-3-Clause"
+"psycopg2@2.9.12" = "LGPL-3.0-or-later WITH OpenSSL-exception"
+"pycryptodome@3.19.1" = "BSD-2-Clause OR Apache-2.0 OR LicenseRef-Public-Domain"
+"python-dateutil@2.9.0.post0" = "Apache-2.0 OR BSD-3-Clause"
+"tld@0.13.2" = "MPL-1.1"
+"unidecode@1.1.2" = "GPL-2.0-or-later"
+
+[license_overrides.npm]
+"buildcheck@0.0.7" = "MIT"
+"cpu-features@0.0.10" = "MIT"
+"ssh2@1.17.0" = "MIT"
+"toastr@2.1.4" = "MIT"
+
+[[vendored_components]]
+name = "tabler-ui"
+version = "0.0.34"
+license_expression = "MIT"
+source_url = "https://registry.npmjs.org/tabler-ui/-/tabler-ui-0.0.34.tgz"
+integrity = "sha512-1stQxEx9rfCDaBKh6cNF8boP4FvLERrLdeWj7FXJYgxhxeglaJaymN1bG2davVWysDVhaL20PoZT4RNBYVGCHA=="
+relationship = "477 tracked static/assets files are byte-identical to the published archive; static/assets/js/core.js is fork-modified and remains in the fork source archive."
+
+[[vendored_components]]
+name = "jvectormap"
+version = "2.0.3"
+license_expression = "AGPL-3.0-only"
+source_url = "https://registry.npmjs.org/jvectormap/-/jvectormap-2.0.3.tgz"
+integrity = "sha512-tKQwzV28lVbH8H+o/Lapan1nn9LceQHPHd/OSFAn26nDKFDiTkBrRdUZgVbGy2J9vopoAdrdNeqAt3pouL0GyA=="
+relationship = "Corresponding readable source for the jVectorMap 2.0.3 code embedded by tabler-ui; the local minified bytes are not byte-identical to the npm minified file, so this mapping remains explicitly qualified."
+
+[[vendored_components]]
+name = "clipboard"
+version = "2.0.4"
+license_expression = "MIT"
+source_url = "https://registry.npmjs.org/clipboard/-/clipboard-2.0.4.tgz"
+integrity = "sha512-Vw26VSLRpJfBofiVaFb/I8PVfdI1OxKcYShe6fm0sP/DtmiWQNCjhM/okTvdCo0G+lMMm1rMYbk4IK4x1X+kgQ=="
+relationship = "static/vendor/clipboard.min.js is byte-identical to package/dist/clipboard.min.js."
+
+[[vendored_components]]
+name = "bootstrap-social"
+version = "5.1.1"
+license_expression = "MIT"
+source_url = "https://registry.npmjs.org/bootstrap-social/-/bootstrap-social-5.1.1.tgz"
+integrity = "sha512-26/oT2rVCyyj7QmbrAwR/L3lHZNDWUdlpjh6a+tnBtB75UnEBEx5btwi7aX505w8pTXvkil8vt0faRGSa5NOdQ=="
+relationship = "Readable LESS, SCSS and CSS source for static/vendor/bootstrap-social.min.css; the historical minifier identity is not known."
+
+[[source_assets]]
+name = "duo-labs-py-webauthn-browser-helpers"
+license_expression = "BSD-3-Clause"
+source_url = "https://github.com/duo-labs/py_webauthn"
+paths = ["static/assets/js/vendors/base64.js", "static/assets/js/vendors/webauthn.js"]
+relationship = "The complete preferred-form JavaScript with its upstream BSD notice is tracked in the owned-provider source archive."

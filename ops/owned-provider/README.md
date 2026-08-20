@@ -93,5 +93,7 @@ Runbooks:
 - [Upstream drift and upgrades](UPSTREAM_SYNC.md)
 - [Mail Edge contract verification](MAIL_EDGE_VERIFICATION.md)
 - [Dependency advisory reachability](DEPENDENCY_AUDIT.md)
+- [Public-release compliance bundle](PUBLIC_RELEASE.md)
+- [Reviewed tracked frontend notices](THIRD_PARTY_NOTICES.md)
 - [Runtime and distribution licenses](DISTRIBUTION.md)
 - [Production readiness boundary](PRODUCTION_AUDIT.md)

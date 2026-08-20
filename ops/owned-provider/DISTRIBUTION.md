@@ -57,6 +57,11 @@ and linker build IDs, and their installed-wheel `RECORD` hashes are recomputed
 before the runtime filesystem is normalized. Import-smoke bytecode and the
 non-runtime `ldconfig` auxiliary cache are removed from the conveyed layer.
 
+The source-release and binary-distribution lanes are deliberately separate.
+[`PUBLIC_RELEASE.md`](PUBLIC_RELEASE.md) describes the deterministic public
+source and compliance bundle. The image-bound pipeline below remains mandatory
+before any owned-provider image bytes are conveyed.
+
 ## Copyleft inventory on default paths
 
 | Component | License conclusion | Actual packaged/default path | Required action when conveying bytes |
@@ -64,6 +69,7 @@ non-runtime `ldconfig` auxiliary cache are removed from the conveyed layer.
 | Owned-provider and SimpleLogin fork | AGPL-3.0-only | Application code is loaded by every service and served over the network. | Keep the exact fork commit publicly retrievable, retain license/notices, and provide corresponding source including build and operations scripts. Network users must receive a clear source route. |
 | `intro.js 2.9.3` | AGPL-3.0 | Compiled frontend dependency served by normal pages. | Include its license and source in the corresponding-source/notices set. |
 | `qrious 4.0.2` | GPL-3.0 | Compiled frontend QR implementation used by MFA pages. | Include license and corresponding source for the distributed frontend artifact. |
+| `jvectormap 2.0.3` | AGPL-3.0-only | Minified code is embedded in the tracked Tabler distribution. | Include the complete AGPL text and readable corresponding source. Preserve the explicit uncertainty that the local minified bytes are not byte-identical to the reviewed npm minified file. |
 | `Unidecode 1.1.2` | GPL | Python runtime package used in application normalization paths. | Include license and corresponding source; treat it as runtime, not tooling. |
 | GnuPG and supporting `libassuan`, `libgcrypt`, `libgpg-error` | GnuPG is GPL; supporting libraries are LGPL | `gpg` remains in the image and is the default PGP implementation when `USE_RUST_PGP` is false. | Include notices and matching source for the installed Ubuntu package versions. Preserve dynamic-link and relinking rights for LGPL libraries. |
 | GNU `tar` | GPL | Remains in the final image and is invoked by backup/export and restore. | Include its license and matching Ubuntu source when the image is conveyed. |
@@ -76,6 +82,11 @@ non-runtime `ldconfig` auxiliary cache are removed from the conveyed layer.
 | `pylint`, `djlint`, `astroid`, Black, pytest, tqdm, virtualenv | GPL/LGPL/permissive development tools | No longer installed because production uses `uv sync --locked --no-dev`. | No production-image obligation for bytes that are absent. Source checkout development remains governed by each tool's license. |
 | `gcc`, Binutils, Git | GPL build tools | Build stages contain them; the final runtime policy rejects their packages and executables. | The executable image audit must prove they are absent. |
 
+Paddle.js is loaded from Paddle's documented CDN. The previous local fallback
+was removed because authoritative redistribution permission for the copied
+bytes was not established. It is therefore not part of the source archive or
+owned-provider image build context.
+
 ## Other default images
 
 Compose pulls PostgreSQL rather than repackaging it and pulls Redis 7.4.9 by
@@ -84,7 +95,7 @@ shipping those images is a separate distribution act: retain PostgreSQL's
 license, and explicitly approve Redis 7.4's RSALv2/SSPLv1 terms before doing so.
 The test-only Mailpit image needs the same review only if it is redistributed.
 
-## Deterministic compliance bundle
+## Deterministic image-bound compliance bundle
 
 `distribution-policy.toml` is the fail-closed decision record. It pins the fork
 and upstream source locations, CycloneDX and bundle format versions, copyleft
@@ -168,10 +179,12 @@ altering another file does not bypass these semantic checks.
 
 ## Release boundary
 
-This lane does not push or export any container image. Source publication is
-closed for the owned-provider Git commit once the reviewed branch is pushed:
-the image and application both point to the exact fork, and the revision label
-pins the bytes to one commit.
+This lane does not push or export any container image. Pushing the reviewed
+branch makes the Git commit retrievable, but it does not by itself close the
+public-release evidence set. The deterministic public-release bundle must also
+be generated and verified for that exact commit and Mail Edge pin. The image
+and application point to the exact fork, and the revision label pins inspected
+bytes to one commit.
 
 The deterministic generator and verifier implement the required artifact
 format and enforcement. Binary distribution is still not cleared merely by
