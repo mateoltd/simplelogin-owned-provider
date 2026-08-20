@@ -22,10 +22,11 @@ pin is the input to this bundle. The limited evidence does not prove Section
 ## Scope
 
 The generated archive conveys the exact owned-provider and Mail Edge Git source
-archives, dependency source materials selected by policy, licenses, notices,
-SBOMs, and build evidence. It does not contain an OCI image. The inspected
-owned-provider image is evidence-bound by image ID, rootfs diff IDs, OCI labels,
-runtime inventories, native hashes, and resolved shared-library edges.
+archives, reviewed dependency source materials, licenses, notices, SBOMs, and
+build evidence. It does not contain an OCI image or Mail Edge package artifact.
+The inspected owned-provider image is evidence-bound by image ID, rootfs diff
+IDs, OCI labels, runtime inventories, native hashes, and resolved shared-library
+edges.
 
 PostgreSQL, Redis, Mailpit, the Mail Edge OCI image, credentials, account state,
 and DNS state are not conveyed. If any of those bytes are later included, the
@@ -52,9 +53,18 @@ License conclusions come from the exact package archive metadata and license
 files. Exact package-and-version overrides are allowed only in the reviewed
 policy. The generator downloads every package archive and verifies its lockfile
 hash or integrity before using metadata. It includes every discovered package
-license or notice, standard SPDX texts, all owned-provider runtime sources, all
-vendored sources, and any dependency source archive whose resolved license is
-copyleft.
+license or notice, links every component to standard SPDX texts, and conveys
+all owned-provider runtime and reviewed vendored source archives. Mail Edge
+package artifacts are inspected but not copied into the bundle.
+
+The lock contains 26 build-only prebuilt `@img/sharp-*` packages. Their exact
+package metadata declares the `lovell/sharp` or `lovell/sharp-libvips` source
+repository. `dependencies/upstream-sources.json` binds all 26 identities and
+integrities to the live annotated release tags, peeled Git commits, exact
+source archives, package subdirectories, build scripts, licenses, and
+third-party notices. Those source mappings are review evidence, not a complete
+corresponding-source or relinking offer for later conveyance of the prebuilt
+package binaries and their compiled library closure.
 
 Non-standard terms are represented with package-specific SPDX `LicenseRef`
 identifiers. Their reviewed text must occur byte-for-byte in the exact package
@@ -89,6 +99,7 @@ This is an engineering assessment, not legal approval.
 | owned-provider AGPL source | Exact source archive, Git provenance, AGPL text, build and operations inputs, and source route remain present. |
 | Mail Edge Apache source | Exact pinned source archive, Git provenance, Apache text, frozen lock and workspace build inputs. |
 | GPL, AGPL, LGPL, MPL, EPL, or CDDL package source copied into the bundle | Exact verified package archive, resolved expression, package notices, standard license text, dependency edges, and source mapping. |
+| build-only prebuilt Mail Edge package referenced by the lock | Exact package URL and integrity, extracted license evidence, standard license text, and live Git source mapping are recorded. The binary package archive is not conveyed. |
 | JavaScript and CSS served from owned-provider | Exact lock or reviewed vendored mapping, source archive, license evidence, and static-asset relationship audit. |
 | owned-provider OCI image | Inspected only. No image bytes are in this public-release archive. Binary conveyance remains blocked unless the separate image-bound `distribution_bundle.py` pipeline passes for the exact image. |
 | dynamically linked or interpreted LGPL software in a later conveyed image | Preserve notices, matching source, replacement rights, native linkage evidence, and installation instructions. The image-bound pipeline must determine the exact materials. |
@@ -133,8 +144,9 @@ cmp "$artifact_root/bundle-a.tar.gz" "$artifact_root/bundle-b.tar.gz"
 The generator refuses a dirty or wrong checkout, origin drift, live branch
 drift, an unadvertised Mail Edge commit, stale locks, unsafe archives,
 ambiguous or mismatched licenses, missing source or notice material, incomplete
-container scans, mismatched runtime closures, noncanonical JSON, and checksum or
-SBOM disagreement. Rewriting `SHA256SUMS` cannot bypass the semantic verifier.
+container scans, a changed prebuilt-package set, upstream source tag drift,
+mismatched runtime closures, noncanonical generated JSON, and checksum or SBOM
+disagreement. Rewriting `SHA256SUMS` cannot bypass the semantic verifier.
 
 The secret gate uses the Gitleaks 8.30.1 default rules. Its reviewed macOS arm64
 release archive SHA-256 is

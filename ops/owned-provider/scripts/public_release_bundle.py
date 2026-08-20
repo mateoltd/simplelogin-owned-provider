@@ -285,6 +285,21 @@ class VendoredComponent:
 
 
 @dataclass(frozen=True)
+class DependencySourceMapping:
+    mapping_id: str
+    package_names: tuple[str, ...]
+    package_version: str
+    repository_origin: str
+    repository_tag: str
+    tag_object: str
+    source_commit: str
+    archive_url: str
+    archive_sha256: str
+    archive_root: str
+    license_members: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ReleasePolicy:
     path: Path
     format_name: str
@@ -314,6 +329,7 @@ class ReleasePolicy:
     python_overrides: Mapping[str, str]
     npm_overrides: Mapping[str, str]
     vendored: tuple[VendoredComponent, ...]
+    dependency_source_mappings: tuple[DependencySourceMapping, ...]
     source_assets: tuple[Mapping[str, Any], ...]
 
     @classmethod
@@ -349,6 +365,53 @@ class ReleasePolicy:
             )
             for item in raw.get("vendored_components", [])
         )
+        dependency_source_mappings = tuple(
+            DependencySourceMapping(
+                mapping_id=item["id"],
+                package_names=tuple(sorted(item["package_names"])),
+                package_version=item["package_version"],
+                repository_origin=normalize_origin(item["repository_origin"]),
+                repository_tag=item["repository_tag"],
+                tag_object=item["tag_object"],
+                source_commit=item["source_commit"],
+                archive_url=item["archive_url"],
+                archive_sha256=item["archive_sha256"],
+                archive_root=item["archive_root"],
+                license_members=tuple(sorted(item["license_members"])),
+            )
+            for item in raw.get("dependency_source_mappings", [])
+        )
+        mapped_packages: set[tuple[str, str]] = set()
+        mapping_ids: set[str] = set()
+        for mapping in dependency_source_mappings:
+            if (
+                re.fullmatch(r"[a-z0-9][a-z0-9-]*", mapping.mapping_id) is None
+                or not mapping.package_names
+                or not mapping.package_version
+                or not mapping.repository_tag
+                or SOURCE_SHA.fullmatch(mapping.tag_object) is None
+                or SOURCE_SHA.fullmatch(mapping.source_commit) is None
+                or SHA256.fullmatch(mapping.archive_sha256) is None
+                or urllib.parse.urlparse(mapping.repository_origin).scheme != "https"
+                or urllib.parse.urlparse(mapping.archive_url).scheme != "https"
+            ):
+                raise ReleaseError("dependency source mapping is invalid")
+            validate_relative_path(mapping.archive_root)
+            if "/" in mapping.archive_root or not mapping.license_members:
+                raise ReleaseError("dependency source archive layout is invalid")
+            for member in mapping.license_members:
+                validate_relative_path(member)
+            identities = {
+                (name, mapping.package_version) for name in mapping.package_names
+            }
+            if mapping.mapping_id in mapping_ids or mapped_packages.intersection(
+                identities
+            ):
+                raise ReleaseError("dependency source mapping is duplicated")
+            mapping_ids.add(mapping.mapping_id)
+            mapped_packages.update(identities)
+        if len(dependency_source_mappings) != 2 or len(mapped_packages) != 26:
+            raise ReleaseError("reviewed prebuilt dependency source map is incomplete")
         secret_fixture_hashes = dict(
             sorted(raw.get("secret_fixture_sha256", {}).items())
         )
@@ -397,6 +460,7 @@ class ReleasePolicy:
             python_overrides=dict(raw.get("license_overrides", {}).get("python", {})),
             npm_overrides=dict(raw.get("license_overrides", {}).get("npm", {})),
             vendored=vendored,
+            dependency_source_mappings=dependency_source_mappings,
             source_assets=tuple(raw.get("source_assets", [])),
         )
 
@@ -540,6 +604,29 @@ class ArchiveMetadata:
     package_version: str | None
     raw_license: str | None
     classifiers: tuple[str, ...]
+    source_repository: str | None = None
+    source_subdirectory: str | None = None
+
+
+def npm_source_metadata(package: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    repository = package.get("repository")
+    directory = None
+    if isinstance(repository, dict):
+        value = repository.get("url")
+        directory = repository.get("directory")
+    else:
+        value = repository
+    if not isinstance(value, str) or not value.strip():
+        return None, None
+    origin = normalize_origin(value)
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return None, None
+    if directory is not None:
+        if not isinstance(directory, str):
+            raise ReleaseError("package source directory is invalid")
+        directory = validate_relative_path(directory).as_posix()
+    return origin, directory
 
 
 def _safe_archive_name(name: str) -> PurePosixPath:
@@ -647,6 +734,7 @@ def inspect_archive(
                 item.get("type", "") if isinstance(item, dict) else str(item)
                 for item in license_value
             )
+        source_repository, source_subdirectory = npm_source_metadata(package)
         return ArchiveMetadata(
             license_expression=str(license_value).strip() if license_value else None,
             license_files=tuple(candidates),
@@ -656,6 +744,8 @@ def inspect_archive(
             ),
             raw_license=str(license_value).strip() if license_value else None,
             classifiers=(),
+            source_repository=source_repository,
+            source_subdirectory=source_subdirectory,
         )
     metadata_payload = next(
         (
@@ -698,6 +788,7 @@ def inspect_archive(
                 item.get("type", "") if isinstance(item, dict) else str(item)
                 for item in license_value
             )
+        source_repository, source_subdirectory = npm_source_metadata(package)
         return ArchiveMetadata(
             license_expression=str(license_value).strip() if license_value else None,
             license_files=tuple(candidates),
@@ -707,6 +798,8 @@ def inspect_archive(
             ),
             raw_license=str(license_value).strip() if license_value else None,
             classifiers=(),
+            source_repository=source_repository,
+            source_subdirectory=source_subdirectory,
         )
     return ArchiveMetadata(None, tuple(candidates), None, None, None, ())
 
@@ -899,6 +992,31 @@ class Component:
             "source_url": self.source_url,
             "version": self.version,
         }
+
+
+def dependency_source_mapping_for(
+    policy: ReleasePolicy, component: Component
+) -> DependencySourceMapping | None:
+    matches = [
+        mapping
+        for mapping in policy.dependency_source_mappings
+        if component.name in mapping.package_names
+        and component.version == mapping.package_version
+    ]
+    if len(matches) > 1:
+        raise ReleaseError(
+            f"dependency source mapping is ambiguous: {component.bom_ref}"
+        )
+    mapped_names = {
+        name
+        for mapping in policy.dependency_source_mappings
+        for name in mapping.package_names
+    }
+    if component.name in mapped_names and not matches:
+        raise ReleaseError(
+            f"prebuilt dependency source mapping is missing: {component.bom_ref}"
+        )
+    return matches[0] if matches else None
 
 
 def read_runtime_python(path: Path) -> tuple[str, ...]:
@@ -1619,12 +1737,51 @@ class PublicReleaseBuilder:
             expression, evidence = resolve_license(
                 item.ecosystem, item.name, item.version, metadata, overrides
             )
+            mapping = dependency_source_mapping_for(self.policy, item)
+            properties = dict(item.properties)
+            copyleft = any(
+                license_id.startswith(
+                    ("AGPL-", "CDDL-", "EPL-", "GPL-", "LGPL-", "MPL-")
+                )
+                for license_id in spdx_license_ids(expression)
+            )
+            if (
+                item.ecosystem == "mail-edge-npm"
+                and item.scope == "build"
+                and copyleft
+                and mapping is None
+            ):
+                raise ReleaseError(
+                    f"build-only copyleft dependency source mapping is missing: {item.bom_ref}"
+                )
+            if mapping is not None:
+                if item.ecosystem != "mail-edge-npm" or item.scope != "build":
+                    raise ReleaseError(
+                        f"reviewed prebuilt dependency scope changed: {item.bom_ref}"
+                    )
+                if metadata.source_repository != mapping.repository_origin:
+                    raise ReleaseError(
+                        f"prebuilt dependency source repository changed: {item.bom_ref}"
+                    )
+                if not metadata.source_subdirectory:
+                    raise ReleaseError(
+                        f"prebuilt dependency source directory is missing: {item.bom_ref}"
+                    )
+                properties.update(
+                    {
+                        "archive_kind": "prebuilt-binary-not-conveyed",
+                        "declared_source_repository": metadata.source_repository,
+                        "declared_source_subdirectory": metadata.source_subdirectory,
+                        "upstream_source_mapping": mapping.mapping_id,
+                    }
+                )
             license_paths = copy_license_files(root, item, metadata)
             resolved_item = Component(
                 **{
                     **item.__dict__,
                     "license_expression": expression,
                     "license_evidence": evidence,
+                    "properties": properties,
                 }
             )
             license_paths += copy_custom_license_references(
@@ -1634,16 +1791,7 @@ class PublicReleaseBuilder:
                 self.policy.license_reference_texts,
             )
             source_path = None
-            license_ids = spdx_license_ids(expression)
-            copyleft = any(
-                license_id.startswith(
-                    ("AGPL-", "CDDL-", "EPL-", "GPL-", "LGPL-", "MPL-")
-                )
-                for license_id in license_ids
-            )
-            should_copy = (
-                copy_all_sources or item.scope in {"runtime", "vendored"} or copyleft
-            )
+            should_copy = copy_all_sources or item.scope in {"runtime", "vendored"}
             if should_copy:
                 source_path = component_source_path(item)
                 write_bytes(root, source_path, payload)
@@ -1654,15 +1802,141 @@ class PublicReleaseBuilder:
                         "license_expression": expression,
                         "license_evidence": evidence,
                         "license_paths": license_paths,
+                        "properties": properties,
                         "source_archive_path": source_path,
                     }
                 )
             )
         return tuple(result)
 
+    def _dependency_source_mapping_evidence(
+        self, root: Path, components: Sequence[Component]
+    ) -> Mapping[str, Any]:
+        runner = SubprocessRunner()
+        records = []
+        for mapping in self.policy.dependency_source_mappings:
+            matched = sorted(
+                (
+                    item
+                    for item in components
+                    if dependency_source_mapping_for(self.policy, item) == mapping
+                ),
+                key=lambda item: item.bom_ref,
+            )
+            if {item.name for item in matched} != set(mapping.package_names):
+                raise ReleaseError(
+                    f"prebuilt dependency set changed for mapping: {mapping.mapping_id}"
+                )
+            tag_ref = f"refs/tags/{mapping.repository_tag}"
+            output = str(
+                runner.run(
+                    (
+                        "git",
+                        "ls-remote",
+                        "--tags",
+                        mapping.repository_origin,
+                        tag_ref,
+                        f"{tag_ref}^{{}}",
+                    )
+                )
+            )
+            live_refs = {}
+            for line in output.splitlines():
+                sha, separator, name = line.partition("\t")
+                if separator and SOURCE_SHA.fullmatch(sha):
+                    live_refs[name] = sha
+            if live_refs != {
+                tag_ref: mapping.tag_object,
+                f"{tag_ref}^{{}}": mapping.source_commit,
+            }:
+                raise ReleaseError(
+                    f"dependency source tag differs from policy: {mapping.mapping_id}"
+                )
+            integrity = (
+                "sha256-"
+                + base64.b64encode(bytes.fromhex(mapping.archive_sha256)).decode()
+            )
+            archive = self.fetcher.fetch(mapping.archive_url, integrity)
+            source_path = (
+                f"sources/upstream/{safe_slug(mapping.mapping_id)}-"
+                f"{mapping.source_commit}.tar.gz"
+            )
+            write_bytes(root, source_path, archive)
+            files = archive_files_with_prefix(
+                archive,
+                f"{mapping.archive_root}/",
+                maximum_members=self.policy.maximum_archive_members,
+            )
+            license_paths = []
+            for member in mapping.license_members:
+                payload = files.get(member)
+                if payload is None or not payload.strip():
+                    raise ReleaseError(
+                        f"dependency source license evidence is missing: {mapping.mapping_id}/{member}"
+                    )
+                path = (
+                    f"licenses/upstream/{safe_slug(mapping.mapping_id)}/"
+                    f"{safe_slug(PurePosixPath(member).name)}"
+                )
+                write_bytes(root, path, payload)
+                license_paths.append(path)
+            package_components = []
+            for item in matched:
+                subdirectory = item.properties["declared_source_subdirectory"]
+                package_payload = files.get(f"{subdirectory}/package.json")
+                if package_payload is None:
+                    raise ReleaseError(
+                        f"mapped source package is missing: {item.bom_ref}"
+                    )
+                try:
+                    package = json.loads(package_payload)
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                    raise ReleaseError(
+                        f"mapped source package metadata is invalid: {item.bom_ref}"
+                    ) from error
+                repository_origin, repository_directory = npm_source_metadata(package)
+                if (
+                    package.get("name") != item.name
+                    or str(package.get("version")) != item.version
+                    or repository_origin != mapping.repository_origin
+                    or repository_directory != subdirectory
+                ):
+                    raise ReleaseError(
+                        f"mapped source package metadata differs: {item.bom_ref}"
+                    )
+                package_components.append(
+                    {
+                        "bom_ref": item.bom_ref,
+                        "package_artifact_integrity": item.integrity,
+                        "package_artifact_url": item.source_url,
+                        "source_subdirectory": subdirectory,
+                    }
+                )
+            records.append(
+                {
+                    "archive_sha256": mapping.archive_sha256,
+                    "archive_url": mapping.archive_url,
+                    "conveyance": "upstream-source-conveyed; prebuilt-package-artifacts-not-conveyed",
+                    "license_paths": sorted(license_paths),
+                    "live_tag_verified": True,
+                    "mapping_id": mapping.mapping_id,
+                    "package_components": package_components,
+                    "repository_origin": mapping.repository_origin,
+                    "repository_tag": mapping.repository_tag,
+                    "source_archive_path": source_path,
+                    "source_commit": mapping.source_commit,
+                    "source_scope": "reviewed build-recipe source; not a complete corresponding-source or relinking offer for future binary conveyance",
+                    "tag_object": mapping.tag_object,
+                }
+            )
+        return {
+            "mappings": records,
+            "schema": "owned-provider-dependency-source-mappings-v1",
+        }
+
     def _spdx_license_texts(
         self, root: Path, spdx_repository: GitRepository, expressions: Iterable[str]
-    ) -> str:
+    ) -> Mapping[str, str]:
         if spdx_repository.origin() != self.policy.spdx_origin:
             raise ReleaseError("SPDX license-list origin differs from policy")
         tag_ref = f"refs/tags/{self.policy.spdx_tag}"
@@ -1686,6 +1960,7 @@ class PublicReleaseBuilder:
                 for license_id in spdx_license_ids(expression)
             }
         )
+        license_paths = {}
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as source:
             names = {member.name: member for member in source.getmembers()}
             for license_id in required:
@@ -1698,10 +1973,10 @@ class PublicReleaseBuilder:
                     raise ReleaseError(f"SPDX text is unavailable for {license_id}")
                 stream = source.extractfile(member)
                 assert stream is not None
-                write_bytes(
-                    root, f"licenses/spdx/{safe_slug(license_id)}.txt", stream.read()
-                )
-        return archive_path
+                path = f"licenses/spdx/{safe_slug(license_id)}.txt"
+                write_bytes(root, path, stream.read())
+                license_paths[license_id] = path
+        return license_paths
 
     def _static_asset_audit(
         self,
@@ -1956,6 +2231,9 @@ class PublicReleaseBuilder:
             mail_components = self._inspect_components(
                 temporary, pnpm.components, copy_all_sources=False
             )
+            dependency_source_mappings = self._dependency_source_mapping_evidence(
+                temporary, mail_components
+            )
             vendored_components = tuple(
                 Component(
                     bom_ref=f"pkg:npm/{urllib.parse.quote(item.name, safe='@')}@{item.version}?vendored=true",
@@ -2041,10 +2319,28 @@ class PublicReleaseBuilder:
                     key=lambda item: item.bom_ref,
                 )
             )
-            self._spdx_license_texts(
+            spdx_license_paths = self._spdx_license_texts(
                 temporary,
                 spdx_repository,
                 (item.license_expression for item in components),
+            )
+            components = tuple(
+                Component(
+                    **{
+                        **item.__dict__,
+                        "license_paths": tuple(
+                            sorted(
+                                set(item.license_paths).union(
+                                    spdx_license_paths[license_id]
+                                    for license_id in spdx_license_ids(
+                                        item.license_expression
+                                    )
+                                )
+                            )
+                        ),
+                    }
+                )
+                for item in components
             )
             image_evidence = self._image_evidence(temporary, image, source, python, npm)
             source_value = source.__dict__
@@ -2098,6 +2394,11 @@ class PublicReleaseBuilder:
                 "dependencies/graph.json",
                 canonical_json(dependency_graph) + b"\n",
             )
+            write_bytes(
+                temporary,
+                "dependencies/upstream-sources.json",
+                canonical_json(dependency_source_mappings) + b"\n",
+            )
             serial_digest = hashlib.sha256(
                 f"{source.commit}:{edge.commit}".encode()
             ).hexdigest()
@@ -2148,6 +2449,7 @@ class PublicReleaseBuilder:
                 },
                 "components_file": "dependencies/graph.json",
                 "container_image_id": image_evidence["image"]["image_id"],
+                "dependency_source_mappings_file": "dependencies/upstream-sources.json",
                 "mail_edge_commit": edge.commit,
                 "owned_provider_commit": source.commit,
                 "schema": "owned-provider-public-release-manifest-v1",
@@ -2196,11 +2498,15 @@ def obligation_matrix(
         if families:
             copyleft.append(
                 {
+                    "artifact_conveyed": item.source_archive_path is not None,
                     "component": item.bom_ref,
                     "families": families,
                     "license_expression": item.license_expression,
                     "license_paths": list(item.license_paths),
                     "source_archive_path": item.source_archive_path,
+                    "upstream_source_mapping": item.properties.get(
+                        "upstream_source_mapping"
+                    ),
                 }
             )
     return {
@@ -2212,8 +2518,10 @@ def obligation_matrix(
         "engineering_conclusions": [
             "The generated public-release archive conveys source and compliance evidence, not OCI image bytes.",
             "AGPL, GPL and file-level copyleft source archives and complete license evidence are included for conveyed source dependencies.",
+            "Mail Edge package artifacts are referenced by exact URL and integrity but are not conveyed; reviewed sharp and sharp-libvips Git source archives are mapped separately.",
             "No LGPL Combined Work binary is conveyed by this archive, so static relinkable object files are not objectively required for this archive.",
-            "If the inspected OCI bytes are conveyed, the image-bound distribution_bundle.py gate still requires exact Debian source, native linkage and LGPL replacement instructions for that image.",
+            "The sharp source mappings contain reviewed build-recipe source and notices, not a complete corresponding-source or relinking offer for future conveyance of the prebuilt package artifacts.",
+            "If the inspected OCI bytes or referenced prebuilt package artifacts are conveyed, the image-bound distribution_bundle.py gate still requires exact corresponding source, native linkage and LGPL replacement instructions for those bytes.",
             "This is engineering evidence, not a legal opinion or approval.",
         ],
         "schema": "owned-provider-obligation-matrix-v1",
@@ -2234,9 +2542,10 @@ dependency graphs, package license evidence, CycloneDX 1.6 and SPDX 2.3 SBOMs,
 container inspection evidence, and reproducible build instructions.
 
 It conveys source and engineering evidence only. It does not convey an OCI
-image, create a public source offer, complete Section 16.7, create signatures,
-or represent legal approval. `PROVENANCE.json`, `OBLIGATIONS.json`, and
-`MANIFEST.json` make those boundaries machine-readable.
+image or Mail Edge package artifacts, create a public source offer, complete
+Section 16.7, create signatures, or represent legal approval.
+`dependencies/upstream-sources.json`, `PROVENANCE.json`, `OBLIGATIONS.json`,
+and `MANIFEST.json` make those boundaries machine-readable.
 """
 
 
@@ -2321,6 +2630,11 @@ class PublicReleaseVerifier:
             "signatures_created": False,
         }:
             raise ReleaseError("manifest makes an unsupported release claim")
+        if (
+            manifest.get("dependency_source_mappings_file")
+            != "dependencies/upstream-sources.json"
+        ):
+            raise ReleaseError("dependency source mappings are not linked")
         graph = json.loads((bundle / "dependencies/graph.json").read_bytes())
         if graph.get("schema") != "owned-provider-dependency-graph-v1":
             raise ReleaseError("dependency graph schema is unsupported")
@@ -2386,14 +2700,20 @@ class PublicReleaseVerifier:
                     raise ReleaseError(
                         f"component license evidence is missing: {relative}"
                     )
-            source_path = item.get("source_archive_path")
-            copyleft = any(
-                license_id.startswith(
-                    ("AGPL-", "CDDL-", "EPL-", "GPL-", "LGPL-", "MPL-")
-                )
+            expected_standard_paths = {
+                f"licenses/spdx/{safe_slug(license_id)}.txt"
                 for license_id in spdx_license_ids(item["license_expression"])
-            )
-            if item.get("scope") in {"runtime", "vendored", "source"} or copyleft:
+            }
+            if not expected_standard_paths <= set(item.get("license_paths", [])):
+                raise ReleaseError(
+                    f"component standard license text is not linked: {item.get('bom_ref')}"
+                )
+            source_path = item.get("source_archive_path")
+            if item.get("ecosystem") == "mail-edge-npm" and source_path:
+                raise ReleaseError(
+                    f"Mail Edge package artifact is unexpectedly conveyed: {item.get('bom_ref')}"
+                )
+            if item.get("scope") in {"runtime", "vendored", "source"}:
                 if (
                     not source_path
                     or not (bundle / validate_relative_path(source_path)).is_file()
@@ -2405,6 +2725,165 @@ class PublicReleaseVerifier:
                 verify_integrity(
                     (bundle / validate_relative_path(source_path)).read_bytes(),
                     item["integrity"],
+                )
+        expected_prebuilt = {
+            (name, mapping.package_version): mapping
+            for mapping in self.policy.dependency_source_mappings
+            for name in mapping.package_names
+        }
+        expected_prebuilt_names = {name for name, _ in expected_prebuilt}
+        observed_prebuilt = {
+            (item["name"], item["version"]): item
+            for item in components
+            if item["name"] in expected_prebuilt_names
+            or item.get("properties", {}).get("archive_kind")
+            == "prebuilt-binary-not-conveyed"
+        }
+        if set(observed_prebuilt) != set(expected_prebuilt):
+            raise ReleaseError("reviewed prebuilt dependency set differs from graph")
+        for item in components:
+            identifiers = spdx_license_ids(item["license_expression"])
+            if (
+                item.get("ecosystem") == "mail-edge-npm"
+                and item.get("scope") == "build"
+                and any(
+                    identifier.startswith(
+                        ("AGPL-", "CDDL-", "EPL-", "GPL-", "LGPL-", "MPL-")
+                    )
+                    for identifier in identifiers
+                )
+                and not item.get("properties", {}).get("upstream_source_mapping")
+            ):
+                raise ReleaseError(
+                    f"build-only copyleft dependency source mapping is missing: {item.get('bom_ref')}"
+                )
+        mapping_document = json.loads(
+            (bundle / "dependencies/upstream-sources.json").read_bytes()
+        )
+        if mapping_document.get(
+            "schema"
+        ) != "owned-provider-dependency-source-mappings-v1" or not isinstance(
+            mapping_document.get("mappings"), list
+        ):
+            raise ReleaseError("dependency source mapping schema is unsupported")
+        mapping_records = {
+            item.get("mapping_id"): item for item in mapping_document["mappings"]
+        }
+        if None in mapping_records or set(mapping_records) != {
+            mapping.mapping_id for mapping in self.policy.dependency_source_mappings
+        }:
+            raise ReleaseError("dependency source mapping set differs from policy")
+        for mapping in self.policy.dependency_source_mappings:
+            record = mapping_records[mapping.mapping_id]
+            source_path = record.get("source_archive_path")
+            expected_source_path = (
+                f"sources/upstream/{safe_slug(mapping.mapping_id)}-"
+                f"{mapping.source_commit}.tar.gz"
+            )
+            expected_license_paths = [
+                f"licenses/upstream/{safe_slug(mapping.mapping_id)}/"
+                f"{safe_slug(PurePosixPath(member).name)}"
+                for member in mapping.license_members
+            ]
+            if any(
+                (
+                    record.get("archive_sha256") != mapping.archive_sha256,
+                    record.get("archive_url") != mapping.archive_url,
+                    record.get("conveyance")
+                    != "upstream-source-conveyed; prebuilt-package-artifacts-not-conveyed",
+                    record.get("license_paths") != expected_license_paths,
+                    record.get("live_tag_verified") is not True,
+                    record.get("repository_origin") != mapping.repository_origin,
+                    record.get("repository_tag") != mapping.repository_tag,
+                    source_path != expected_source_path,
+                    record.get("source_commit") != mapping.source_commit,
+                    record.get("source_scope")
+                    != "reviewed build-recipe source; not a complete corresponding-source or relinking offer for future binary conveyance",
+                    record.get("tag_object") != mapping.tag_object,
+                )
+            ):
+                raise ReleaseError(
+                    f"dependency source mapping differs from policy: {mapping.mapping_id}"
+                )
+            archive_path = bundle / validate_relative_path(source_path)
+            if (
+                not archive_path.is_file()
+                or sha256_file(archive_path) != mapping.archive_sha256
+            ):
+                raise ReleaseError(
+                    f"dependency source archive differs from policy: {mapping.mapping_id}"
+                )
+            source_files = archive_files_with_prefix(
+                archive_path.read_bytes(),
+                f"{mapping.archive_root}/",
+                maximum_members=self.policy.maximum_archive_members,
+            )
+            for member, license_path in zip(
+                mapping.license_members, expected_license_paths, strict=True
+            ):
+                bundled_license = bundle / license_path
+                if (
+                    not bundled_license.is_file()
+                    or source_files.get(member) != bundled_license.read_bytes()
+                ):
+                    raise ReleaseError(
+                        f"dependency source license differs: {mapping.mapping_id}/{member}"
+                    )
+            expected_components = []
+            for name in mapping.package_names:
+                item = observed_prebuilt[(name, mapping.package_version)]
+                properties = item.get("properties", {})
+                if (
+                    item.get("ecosystem") != "mail-edge-npm"
+                    or item.get("scope") != "build"
+                    or item.get("source_archive_path") is not None
+                    or properties.get("archive_kind") != "prebuilt-binary-not-conveyed"
+                    or properties.get("declared_source_repository")
+                    != mapping.repository_origin
+                    or properties.get("upstream_source_mapping") != mapping.mapping_id
+                ):
+                    raise ReleaseError(
+                        f"prebuilt dependency conveyance differs: {item.get('bom_ref')}"
+                    )
+                subdirectory = properties.get("declared_source_subdirectory")
+                if not isinstance(subdirectory, str):
+                    raise ReleaseError(
+                        f"prebuilt dependency source directory is missing: {item.get('bom_ref')}"
+                    )
+                package_payload = source_files.get(f"{subdirectory}/package.json")
+                if package_payload is None:
+                    raise ReleaseError(
+                        f"mapped source package is missing: {item.get('bom_ref')}"
+                    )
+                try:
+                    package = json.loads(package_payload)
+                except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                    raise ReleaseError(
+                        f"mapped source package metadata is invalid: {item.get('bom_ref')}"
+                    ) from error
+                repository_origin, repository_directory = npm_source_metadata(package)
+                if (
+                    package.get("name") != item["name"]
+                    or str(package.get("version")) != item["version"]
+                    or repository_origin != mapping.repository_origin
+                    or repository_directory != subdirectory
+                ):
+                    raise ReleaseError(
+                        f"mapped source package metadata differs: {item.get('bom_ref')}"
+                    )
+                expected_components.append(
+                    {
+                        "bom_ref": item["bom_ref"],
+                        "package_artifact_integrity": item["integrity"],
+                        "package_artifact_url": item["source_url"],
+                        "source_subdirectory": subdirectory,
+                    }
+                )
+            if record.get("package_components") != sorted(
+                expected_components, key=lambda item: item["bom_ref"]
+            ):
+                raise ReleaseError(
+                    f"dependency source component mapping differs: {mapping.mapping_id}"
                 )
         cdx = json.loads((bundle / "sbom/bom.cdx.json").read_bytes())
         if cdx.get("bomFormat") != "CycloneDX" or cdx.get("specVersion") != "1.6":

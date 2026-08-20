@@ -6,6 +6,7 @@ import json
 import base64
 import sys
 import tarfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ from public_release_bundle import (  # noqa: E402
     canonical_json,
     copy_custom_license_references,
     cyclonedx_document,
+    dependency_source_mapping_for,
     deterministic_directory_archive,
     inspect_archive,
     npm_lock_components,
@@ -42,7 +44,7 @@ POLICY_PATH = REPOSITORY / "ops" / "owned-provider" / "public-release-policy.tom
 
 @pytest.fixture()
 def policy() -> ReleasePolicy:
-    return ReleasePolicy.load(POLICY_PATH)
+    return replace(ReleasePolicy.load(POLICY_PATH), dependency_source_mappings=())
 
 
 def source_tar(files: dict[str, bytes]) -> bytes:
@@ -125,6 +127,70 @@ def test_custom_license_text_must_match_archive_evidence(tmp_path: Path) -> None
     ) == ("licenses/custom/LicenseRef-Example.txt",)
 
 
+def test_reviewed_prebuilt_source_map_is_complete() -> None:
+    reviewed = ReleasePolicy.load(POLICY_PATH)
+    assert len(reviewed.dependency_source_mappings) == 2
+    assert (
+        sum(
+            len(mapping.package_names)
+            for mapping in reviewed.dependency_source_mappings
+        )
+        == 26
+    )
+    assert {
+        mapping.source_commit for mapping in reviewed.dependency_source_mappings
+    } == {
+        "6d80db40e9f37e311c13d1149745fcd80b5466db",
+        "c9622a38edfc6fc709764152ea34332ba01619cf",
+    }
+
+
+def test_prebuilt_source_map_fails_closed_for_unknown_version() -> None:
+    reviewed = ReleasePolicy.load(POLICY_PATH)
+    component = Component(
+        bom_ref="pkg:npm/@img%2Fsharp-libvips-linux-x64@1.3.2",
+        ecosystem="mail-edge-npm",
+        name="@img/sharp-libvips-linux-x64",
+        version="1.3.2",
+        scope="build",
+        license_expression="LGPL-3.0-or-later",
+        license_evidence="archive-metadata",
+        source_url="https://registry.npmjs.org/example.tgz",
+        integrity=sri(b"example"),
+    )
+    with pytest.raises(ReleaseError, match="source mapping is missing"):
+        dependency_source_mapping_for(reviewed, component)
+
+
+def test_npm_source_repository_is_read_from_exact_archive(
+    policy: ReleasePolicy,
+) -> None:
+    payload = source_tar(
+        {
+            "package/package.json": canonical_json(
+                {
+                    "license": "LGPL-3.0-or-later",
+                    "name": "@img/sharp-libvips-linux-x64",
+                    "repository": {
+                        "directory": "npm/linux-x64",
+                        "type": "git",
+                        "url": "git+https://github.com/lovell/sharp-libvips.git",
+                    },
+                    "version": "1.3.1",
+                }
+            )
+        }
+    )
+    metadata = inspect_archive(
+        payload,
+        maximum_members=policy.maximum_archive_members,
+        maximum_license_bytes=policy.maximum_license_bytes,
+        maximum_license_files=policy.maximum_license_files,
+    )
+    assert metadata.source_repository == "https://github.com/lovell/sharp-libvips.git"
+    assert metadata.source_subdirectory == "npm/linux-x64"
+
+
 def sri(payload: bytes) -> str:
     return "sha256-" + base64.b64encode(bytes.fromhex(sha256_bytes(payload))).decode()
 
@@ -205,6 +271,9 @@ def make_complete_bundle(root: Path, policy: ReleasePolicy) -> Path:
         "licenses/AGPL.txt": b"AGPL text\n",
         "licenses/Apache.txt": b"Apache text\n",
         "licenses/container/debian/base/copyright": b"Debian license text\n",
+        "licenses/spdx/AGPL-3.0-only.txt": b"AGPL standard text\n",
+        "licenses/spdx/Apache-2.0.txt": b"Apache standard text\n",
+        "licenses/spdx/MIT.txt": b"MIT standard text\n",
     }
     for relative, payload in paths.items():
         path = root / relative
@@ -218,7 +287,10 @@ def make_complete_bundle(root: Path, policy: ReleasePolicy) -> Path:
             "integrity": sri(owned_archive),
             "license_evidence": "repository",
             "license_expression": "AGPL-3.0-only",
-            "license_paths": ["licenses/AGPL.txt"],
+            "license_paths": [
+                "licenses/AGPL.txt",
+                "licenses/spdx/AGPL-3.0-only.txt",
+            ],
             "name": "owned",
             "properties": {},
             "scope": "source",
@@ -233,7 +305,10 @@ def make_complete_bundle(root: Path, policy: ReleasePolicy) -> Path:
             "integrity": sri(edge_archive),
             "license_evidence": "repository",
             "license_expression": "Apache-2.0",
-            "license_paths": ["licenses/Apache.txt"],
+            "license_paths": [
+                "licenses/Apache.txt",
+                "licenses/spdx/Apache-2.0.txt",
+            ],
             "name": "edge",
             "properties": {},
             "scope": "source",
@@ -271,7 +346,7 @@ def make_complete_bundle(root: Path, policy: ReleasePolicy) -> Path:
                 ),
                 "license_evidence": "archive",
                 "license_expression": "MIT",
-                "license_paths": [],
+                "license_paths": ["licenses/spdx/MIT.txt"],
                 "name": f"build-{index}",
                 "properties": {},
                 "scope": scope,
@@ -374,6 +449,7 @@ def make_complete_bundle(root: Path, policy: ReleasePolicy) -> Path:
             "section_16_7_complete": False,
             "signatures_created": False,
         },
+        "dependency_source_mappings_file": "dependencies/upstream-sources.json",
         "mail_edge_commit": edge_commit,
         "owned_provider_commit": owned_commit,
         "schema": "owned-provider-public-release-manifest-v1",
@@ -391,6 +467,10 @@ def make_complete_bundle(root: Path, policy: ReleasePolicy) -> Path:
     json_files = {
         "dependencies/graph.json": graph,
         "dependencies/static-assets.json": static_assets,
+        "dependencies/upstream-sources.json": {
+            "mappings": [],
+            "schema": "owned-provider-dependency-source-mappings-v1",
+        },
         "evidence/container-runtime.json": container,
         "MANIFEST.json": manifest,
         "PROVENANCE.json": provenance,
@@ -597,6 +677,57 @@ def test_license_mismatch_with_rewritten_sums_is_rejected(
         PublicReleaseVerifier(policy).verify(bundle)
 
 
+def test_missing_standard_license_link_is_rejected(
+    tmp_path: Path, policy: ReleasePolicy
+) -> None:
+    bundle = make_complete_bundle(tmp_path / "bundle", policy)
+    graph_path = bundle / "dependencies/graph.json"
+    graph = json.loads(graph_path.read_bytes())
+    graph["components"][2]["license_paths"] = []
+    graph_path.write_bytes(canonical_json(graph) + b"\n")
+    rewrite_checksums(bundle)
+    with pytest.raises(ReleaseError, match="standard license text is not linked"):
+        PublicReleaseVerifier(policy).verify(bundle)
+
+
+def test_mail_edge_package_artifact_is_not_conveyed_as_source(
+    tmp_path: Path, policy: ReleasePolicy
+) -> None:
+    bundle = make_complete_bundle(tmp_path / "bundle", policy)
+    graph_path = bundle / "dependencies/graph.json"
+    graph = json.loads(graph_path.read_bytes())
+    component = next(
+        item for item in graph["components"] if item["ecosystem"] == "mail-edge-npm"
+    )
+    component["source_archive_path"] = "sources/projects/owned.tar.gz"
+    component["integrity"] = graph["components"][0]["integrity"]
+    graph_path.write_bytes(canonical_json(graph) + b"\n")
+    rewrite_checksums(bundle)
+    with pytest.raises(ReleaseError, match="unexpectedly conveyed"):
+        PublicReleaseVerifier(policy).verify(bundle)
+
+
+def test_build_copyleft_dependency_requires_upstream_source_mapping(
+    tmp_path: Path, policy: ReleasePolicy
+) -> None:
+    bundle = make_complete_bundle(tmp_path / "bundle", policy)
+    license_path = bundle / "licenses/spdx/LGPL-3.0-or-later.txt"
+    license_path.write_text("LGPL standard text\n")
+    graph_path = bundle / "dependencies/graph.json"
+    graph = json.loads(graph_path.read_bytes())
+    component = next(
+        item
+        for item in graph["components"]
+        if item["ecosystem"] == "mail-edge-npm" and item["scope"] == "build"
+    )
+    component["license_expression"] = "LGPL-3.0-or-later"
+    component["license_paths"] = ["licenses/spdx/LGPL-3.0-or-later.txt"]
+    graph_path.write_bytes(canonical_json(graph) + b"\n")
+    rewrite_checksums(bundle)
+    with pytest.raises(ReleaseError, match="source mapping is missing"):
+        PublicReleaseVerifier(policy).verify(bundle)
+
+
 def test_false_legal_claim_with_rewritten_sums_is_rejected(
     tmp_path: Path, policy: ReleasePolicy
 ) -> None:
@@ -683,9 +814,9 @@ def test_upstream_json_license_evidence_is_preserved(
     evidence_path.write_text('{\n  "license": "MIT"\n}\n')
     graph_path = bundle / "dependencies/graph.json"
     graph = json.loads(graph_path.read_bytes())
-    graph["components"][2]["license_paths"] = [
+    graph["components"][2]["license_paths"].append(
         "licenses/packages/example/license-db.json"
-    ]
+    )
     graph_path.write_bytes(canonical_json(graph) + b"\n")
     rewrite_checksums(bundle)
 

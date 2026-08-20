@@ -28,12 +28,66 @@ gitleaks_darwin_arm64_archive_sha256 = "b40ab0ae55c505963e365f271a8d3846efbc170a
 [distribution_scope]
 owned_provider_source_archive = "conveyed"
 mail_edge_source_archive = "conveyed"
-dependency_source_archives = "conveyed-when-copyleft-or-vendored"
+dependency_source_archives = "owned-runtime-and-vendored-conveyed; mail-edge-package-artifacts-referenced-not-conveyed"
 owned_provider_oci_image = "inspected-not-conveyed"
 mail_edge_oci_image = "not-conveyed"
 postgres_image = "referenced-not-conveyed"
 redis_image = "referenced-not-conveyed"
 mailpit_image = "referenced-not-conveyed"
+
+[[dependency_source_mappings]]
+id = "sharp-libvips-v1-3-1"
+package_names = [
+  "@img/sharp-libvips-darwin-arm64",
+  "@img/sharp-libvips-darwin-x64",
+  "@img/sharp-libvips-linux-arm",
+  "@img/sharp-libvips-linux-arm64",
+  "@img/sharp-libvips-linux-ppc64",
+  "@img/sharp-libvips-linux-riscv64",
+  "@img/sharp-libvips-linux-s390x",
+  "@img/sharp-libvips-linux-x64",
+  "@img/sharp-libvips-linuxmusl-arm64",
+  "@img/sharp-libvips-linuxmusl-x64",
+]
+package_version = "1.3.1"
+repository_origin = "https://github.com/lovell/sharp-libvips.git"
+repository_tag = "v1.3.1"
+tag_object = "2ed6d874c1b26d614a85c832738e5bcb9417bc8c"
+source_commit = "6d80db40e9f37e311c13d1149745fcd80b5466db"
+archive_url = "https://codeload.github.com/lovell/sharp-libvips/tar.gz/6d80db40e9f37e311c13d1149745fcd80b5466db"
+archive_sha256 = "3edfe6cf6c23ff1083477dcffaad9d0f181112547e2e511733f26a0dfefb8bd1"
+archive_root = "sharp-libvips-6d80db40e9f37e311c13d1149745fcd80b5466db"
+license_members = ["LICENSE", "THIRD-PARTY-NOTICES.md"]
+
+[[dependency_source_mappings]]
+id = "sharp-v0-35-2"
+package_names = [
+  "@img/sharp-darwin-arm64",
+  "@img/sharp-darwin-x64",
+  "@img/sharp-freebsd-wasm32",
+  "@img/sharp-linux-arm",
+  "@img/sharp-linux-arm64",
+  "@img/sharp-linux-ppc64",
+  "@img/sharp-linux-riscv64",
+  "@img/sharp-linux-s390x",
+  "@img/sharp-linux-x64",
+  "@img/sharp-linuxmusl-arm64",
+  "@img/sharp-linuxmusl-x64",
+  "@img/sharp-wasm32",
+  "@img/sharp-webcontainers-wasm32",
+  "@img/sharp-win32-arm64",
+  "@img/sharp-win32-ia32",
+  "@img/sharp-win32-x64",
+]
+package_version = "0.35.2"
+repository_origin = "https://github.com/lovell/sharp.git"
+repository_tag = "v0.35.2"
+tag_object = "36572537970128a3fa4179c06e60670e04fe8f6c"
+source_commit = "c9622a38edfc6fc709764152ea34332ba01619cf"
+archive_url = "https://codeload.github.com/lovell/sharp/tar.gz/c9622a38edfc6fc709764152ea34332ba01619cf"
+archive_sha256 = "7623cece637f42f14e48233fe5f10a8b8a3785783db02309ac88ed5104b93a96"
+archive_root = "sharp-c9622a38edfc6fc709764152ea34332ba01619cf"
+license_members = ["LICENSE"]
 
 [limits]
 maximum_download_bytes = 536870912
