@@ -145,7 +145,8 @@ def parse_checksum_manifest(payload: bytes) -> dict[str, str]:
 class CommandRunner(Protocol):
     def run(
         self, arguments: Sequence[str], *, cwd: Path | None = None, text: bool = True
-    ) -> str | bytes: ...
+    ) -> str | bytes:
+        ...
 
 
 class SubprocessRunner:
