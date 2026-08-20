@@ -306,6 +306,7 @@ class ReleasePolicy:
     maximum_license_bytes: int
     maximum_license_files: int
     secret_fixture_hashes: Mapping[str, str]
+    license_reference_texts: Mapping[str, str]
     python_overrides: Mapping[str, str]
     npm_overrides: Mapping[str, str]
     vendored: tuple[VendoredComponent, ...]
@@ -353,6 +354,16 @@ class ReleasePolicy:
             validate_relative_path(relative)
             if SHA256.fullmatch(digest) is None:
                 raise ReleaseError("reviewed secret fixture hash is invalid")
+        license_reference_texts = dict(
+            sorted(raw.get("license_reference_texts", {}).items())
+        )
+        for license_id, license_text in license_reference_texts.items():
+            if re.fullmatch(r"LicenseRef-[A-Za-z0-9.-]+", license_id) is None:
+                raise ReleaseError("custom license reference ID is invalid")
+            if not license_text.strip() or len(license_text.encode()) > int(
+                limits["maximum_license_bytes"]
+            ):
+                raise ReleaseError("custom license reference text is invalid")
         return cls(
             path=path.resolve(),
             format_name=raw["bundle_format"],
@@ -378,6 +389,7 @@ class ReleasePolicy:
             maximum_license_bytes=int(limits["maximum_license_bytes"]),
             maximum_license_files=int(limits["maximum_license_files_per_component"]),
             secret_fixture_hashes=secret_fixture_hashes,
+            license_reference_texts=license_reference_texts,
             python_overrides=dict(raw.get("license_overrides", {}).get("python", {})),
             npm_overrides=dict(raw.get("license_overrides", {}).get("npm", {})),
             vendored=vendored,
@@ -818,6 +830,18 @@ def spdx_license_ids(expression: str) -> tuple[str, ...]:
     return tuple(sorted(set(values)))
 
 
+def license_reference_ids(expression: str) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                token
+                for token in SPDX_TOKEN.findall(expression)
+                if token.startswith("LicenseRef-")
+            }
+        )
+    )
+
+
 @dataclass
 class Component:
     bom_ref: str
@@ -1200,6 +1224,31 @@ def copy_license_files(
     return tuple(sorted(paths))
 
 
+def copy_custom_license_references(
+    root: Path,
+    component: Component,
+    metadata: ArchiveMetadata,
+    license_reference_texts: Mapping[str, str],
+) -> tuple[str, ...]:
+    paths = []
+    evidence = tuple(
+        payload.replace(b"\r\n", b"\n") for _, payload in metadata.license_files
+    )
+    for license_id in license_reference_ids(component.license_expression):
+        license_text = license_reference_texts.get(license_id)
+        if license_text is None:
+            raise ReleaseError(f"custom license reference is unreviewed: {license_id}")
+        payload = license_text.strip().encode() + b"\n"
+        if not any(payload.strip() in candidate for candidate in evidence):
+            raise ReleaseError(
+                f"custom license reference differs from archive evidence: {component.bom_ref}"
+            )
+        path = f"licenses/custom/{safe_slug(license_id)}.txt"
+        write_bytes(root, path, payload)
+        paths.append(path)
+    return tuple(paths)
+
+
 def component_source_path(component: Component) -> str:
     suffix = PurePosixPath(urllib.parse.urlparse(component.source_url).path).name
     return (
@@ -1274,7 +1323,25 @@ def cyclonedx_document(
     }
 
 
-def spdx_document(components: Sequence[Component], namespace: str) -> dict[str, Any]:
+def spdx_document(
+    components: Sequence[Component],
+    namespace: str,
+    license_reference_texts: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    references = sorted(
+        {
+            license_id
+            for item in components
+            for license_id in license_reference_ids(item.license_expression)
+        }
+    )
+    reviewed_references = license_reference_texts or {}
+    missing_references = sorted(set(references) - set(reviewed_references))
+    if missing_references:
+        raise ReleaseError(
+            "SPDX custom license references are unreviewed: "
+            + ", ".join(missing_references)
+        )
     identifiers = {
         item.bom_ref: f"SPDXRef-Package-{index:04d}"
         for index, item in enumerate(
@@ -1299,6 +1366,13 @@ def spdx_document(components: Sequence[Component], namespace: str) -> dict[str, 
         },
         "dataLicense": "CC0-1.0",
         "documentNamespace": namespace,
+        "hasExtractedLicensingInfos": [
+            {
+                "extractedText": reviewed_references[license_id].strip() + "\n",
+                "licenseId": license_id,
+            }
+            for license_id in references
+        ],
         "name": "simplelogin-owned-provider-public-release",
         "packages": [
             {
@@ -1495,6 +1569,19 @@ class PublicReleaseBuilder:
                 item.ecosystem, item.name, item.version, metadata, overrides
             )
             license_paths = copy_license_files(root, item, metadata)
+            resolved_item = Component(
+                **{
+                    **item.__dict__,
+                    "license_expression": expression,
+                    "license_evidence": evidence,
+                }
+            )
+            license_paths += copy_custom_license_references(
+                root,
+                resolved_item,
+                metadata,
+                self.policy.license_reference_texts,
+            )
             source_path = None
             license_ids = spdx_license_ids(expression)
             copyleft = any(
@@ -1980,6 +2067,7 @@ class PublicReleaseBuilder:
                     spdx_document(
                         components,
                         f"https://github.com/mateoltd/simplelogin-owned-provider/spdx/{source.commit}/{edge.commit}",
+                        self.policy.license_reference_texts,
                     )
                 )
                 + b"\n",
@@ -2337,6 +2425,40 @@ class PublicReleaseVerifier:
             }
         ):
             raise ReleaseError("SPDX document differs from dependency graph")
+        referenced_license_ids = sorted(
+            {
+                license_id
+                for item in components
+                for license_id in license_reference_ids(item["license_expression"])
+            }
+        )
+        missing_license_ids = sorted(
+            set(referenced_license_ids) - set(self.policy.license_reference_texts)
+        )
+        if missing_license_ids:
+            raise ReleaseError(
+                "SPDX custom license references are unreviewed: "
+                + ", ".join(missing_license_ids)
+            )
+        for license_id in referenced_license_ids:
+            path = bundle / f"licenses/custom/{safe_slug(license_id)}.txt"
+            expected_text = (
+                self.policy.license_reference_texts[license_id].strip().encode() + b"\n"
+            )
+            if not path.is_file() or path.read_bytes() != expected_text:
+                raise ReleaseError(
+                    f"custom license evidence differs from policy: {license_id}"
+                )
+        expected_extracted_licenses = [
+            {
+                "extractedText": self.policy.license_reference_texts[license_id].strip()
+                + "\n",
+                "licenseId": license_id,
+            }
+            for license_id in referenced_license_ids
+        ]
+        if spdx.get("hasExtractedLicensingInfos") != expected_extracted_licenses:
+            raise ReleaseError("SPDX custom license evidence differs from policy")
         spdx_components = {}
         for item in spdx.get("packages", []):
             source_info = item.get("sourceInfo", "")

@@ -56,6 +56,13 @@ license or notice, standard SPDX texts, all owned-provider runtime sources, all
 vendored sources, and any dependency source archive whose resolved license is
 copyleft.
 
+Non-standard terms are represented with package-specific SPDX `LicenseRef`
+identifiers. Their reviewed text must occur byte-for-byte in the exact package
+license evidence, is copied to `licenses/custom`, and is embedded as SPDX
+extracted licensing information. The current references cover psycopg2's
+OpenSSL linking exception and PyCryptodome's public-domain grant; neither is
+misrepresented as a standard SPDX exception or license.
+
 ## Static assets
 
 `dependencies/static-assets.json` is generated and semantically verified

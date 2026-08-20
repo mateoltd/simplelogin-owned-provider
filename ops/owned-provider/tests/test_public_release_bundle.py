@@ -22,6 +22,7 @@ from public_release_bundle import (  # noqa: E402
     ReleasePolicy,
     build_checksum_manifest,
     canonical_json,
+    copy_custom_license_references,
     cyclonedx_document,
     deterministic_directory_archive,
     inspect_archive,
@@ -56,6 +57,72 @@ def source_tar(files: dict[str, bytes]) -> bytes:
     with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as stream:
         stream.write(uncompressed.getvalue())
     return output.getvalue()
+
+
+def test_spdx_requires_reviewed_custom_license_text() -> None:
+    component = Component(
+        bom_ref="pkg:pypi/example@1",
+        ecosystem="pypi",
+        name="example",
+        version="1",
+        scope="runtime",
+        license_expression="MIT OR LicenseRef-Example",
+        license_evidence="test",
+        source_url="https://example.invalid/example.tar.gz",
+        integrity=sri(b"example"),
+    )
+
+    with pytest.raises(ReleaseError, match="custom license references are unreviewed"):
+        spdx_document((component,), "https://example.invalid/spdx")
+
+    document = spdx_document(
+        (component,),
+        "https://example.invalid/spdx",
+        {"LicenseRef-Example": "Exact custom terms.\n"},
+    )
+    assert document["hasExtractedLicensingInfos"] == [
+        {
+            "extractedText": "Exact custom terms.\n",
+            "licenseId": "LicenseRef-Example",
+        }
+    ]
+
+
+def test_custom_license_text_must_match_archive_evidence(tmp_path: Path) -> None:
+    component = Component(
+        bom_ref="pkg:pypi/example@1",
+        ecosystem="pypi",
+        name="example",
+        version="1",
+        scope="runtime",
+        license_expression="LicenseRef-Example",
+        license_evidence="test",
+        source_url="https://example.invalid/example.tar.gz",
+        integrity=sri(b"example"),
+    )
+    metadata = ArchiveMetadata(
+        license_expression=None,
+        license_files=(("example/LICENSE", b"Actual custom terms.\n"),),
+        package_name="example",
+        package_version="1",
+        raw_license=None,
+        classifiers=(),
+    )
+
+    with pytest.raises(ReleaseError, match="differs from archive evidence"):
+        copy_custom_license_references(
+            tmp_path,
+            component,
+            metadata,
+            {"LicenseRef-Example": "Different terms.\n"},
+        )
+
+    assert copy_custom_license_references(
+        tmp_path,
+        component,
+        metadata,
+        {"LicenseRef-Example": "Actual custom terms.\n"},
+    ) == ("licenses/custom/LicenseRef-Example.txt",)
 
 
 def sri(payload: bytes) -> str:

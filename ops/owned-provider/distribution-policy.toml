@@ -11,7 +11,10 @@ license_expression = "AGPL-3.0-only"
 [obligations]
 source_license_families = ["AGPL", "GPL", "LGPL", "MPL", "EPL", "CDDL"]
 relink_license_families = ["LGPL"]
-allowed_license_refs = ["LicenseRef-psycopg2-OpenSSL-exception"]
+allowed_license_refs = [
+  "LicenseRef-PyCryptodome-Public-Domain",
+  "LicenseRef-psycopg2-OpenSSL-exception",
+]
 allowed_license_ids = [
   "0BSD",
   "AGPL-3.0-only",
@@ -67,7 +70,6 @@ allowed_license_ids = [
 allowed_license_exceptions = [
   "Classpath-exception-2.0",
   "GCC-exception-3.1",
-  "OpenSSL-exception",
 ]
 static_relink_material_kinds = ["object", "link-script", "instructions"]
 dynamic_relink_material_kinds = ["source", "instructions"]
