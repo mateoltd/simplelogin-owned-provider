@@ -423,6 +423,7 @@ def run_secret_scan(
     runner: CommandRunner | None = None,
 ) -> Mapping[str, Any]:
     repository = repository.resolve()
+    gitleaks = gitleaks.resolve()
     runner = runner or SubprocessRunner()
     fixtures = verify_secret_allowlist(repository, policy)
     version = str(runner.run((str(gitleaks), "version"), cwd=repository)).strip()
@@ -431,18 +432,38 @@ def run_secret_scan(
             f"Gitleaks version differs from policy: {version or 'missing'}"
         )
     config = repository / "ops/owned-provider/gitleaks.toml"
-    runner.run(
-        (
-            str(gitleaks),
-            "dir",
-            "--config",
-            str(config),
-            "--no-banner",
-            "--redact",
-            ".",
-        ),
-        cwd=repository,
-    )
+    git_repository = GitRepository(repository)
+    source_archive = git_repository.archive(git_repository.head(), "source/")
+    with tempfile.TemporaryDirectory(prefix="owned-provider-secret-scan-") as value:
+        scan_root = Path(value)
+        with tarfile.open(fileobj=io.BytesIO(source_archive), mode="r:gz") as archive:
+            for member in archive.getmembers():
+                name = _safe_archive_name(member.name)
+                if name.parts[0] != "source":
+                    raise ReleaseError("secret scan archive has an unexpected root")
+                relative = PurePosixPath(*name.parts[1:])
+                if not relative.parts or member.isdir():
+                    continue
+                if not member.isfile():
+                    raise ReleaseError(
+                        "secret scan archive contains a non-regular path"
+                    )
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise ReleaseError("secret scan archive member is unreadable")
+                write_bytes(scan_root, relative.as_posix(), stream.read())
+        runner.run(
+            (
+                str(gitleaks),
+                "dir",
+                "--config",
+                str(config),
+                "--no-banner",
+                "--redact",
+                ".",
+            ),
+            cwd=scan_root,
+        )
     runner.run(
         (
             str(gitleaks),

@@ -142,7 +142,10 @@ release archive SHA-256 is
 Seven public test fixture or example paths are allowlisted because the upstream
 tree intentionally contains test private keys and token-shaped examples. Every
 complete file is SHA-256-pinned in `public-release-policy.toml`; a byte change
-fails before the allowlisted scan runs:
+fails before the allowlisted scan runs. The directory pass scans a temporary
+archive of the exact Git `HEAD` that the bundle conveys, so gitignored runtime
+state is not conflated with distributed source; the history pass separately
+scans the integration-base-to-HEAD commit range:
 
 ```sh
 python3 ops/owned-provider/scripts/public_release_bundle.py secret-scan \

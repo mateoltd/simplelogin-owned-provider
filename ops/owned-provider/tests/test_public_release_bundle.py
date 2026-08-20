@@ -133,6 +133,7 @@ class SecretScanRunner:
     def __init__(self, version: str) -> None:
         self.version = version
         self.calls: list[tuple[str, ...]] = []
+        self.working_directories: list[Path] = []
 
     def run(
         self,
@@ -141,9 +142,13 @@ class SecretScanRunner:
         cwd: Path | None = None,
         text: bool = True,
     ) -> str:
-        assert cwd == REPOSITORY
+        assert cwd is not None
         assert text is True
+        if len(arguments) > 1 and arguments[1] == "dir":
+            assert (cwd / "ops/owned-provider/gitleaks.toml").is_file()
+            assert not (cwd / ".owned-provider").exists()
         self.calls.append(arguments)
+        self.working_directories.append(cwd)
         return self.version if arguments[-1] == "version" else ""
 
 
@@ -519,6 +524,9 @@ def test_secret_scan_pins_tool_and_runs_tree_and_history(
         "verified": True,
     }
     assert [call[1] for call in runner.calls] == ["version", "dir", "git"]
+    assert runner.working_directories[0] == REPOSITORY
+    assert runner.working_directories[1] != REPOSITORY
+    assert runner.working_directories[2] == REPOSITORY
     stale = SecretScanRunner("0.0.0")
     with pytest.raises(ReleaseError, match="version differs"):
         run_secret_scan(REPOSITORY, policy, Path("/reviewed/gitleaks"), stale)
