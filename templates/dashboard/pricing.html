@@ -8,8 +8,6 @@
   <script>
     if (window.Paddle === undefined) {
       console.log("cannot load Paddle from CDN");
-      // split string to avoid djlint incorrectly formatting the file
-      document.write('<' + 'script src="/static/vendor/paddle.js"><\/script ' + '>');
     }
   </script>
   <style type="text/css">
