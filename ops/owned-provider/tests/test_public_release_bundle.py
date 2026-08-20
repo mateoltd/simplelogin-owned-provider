@@ -690,6 +690,17 @@ def test_checksum_manifest_rejects_duplicate_and_unsorted_lines() -> None:
         parse_checksum_manifest(payload)
 
 
+def test_checksum_manifest_sorts_complete_relative_paths(tmp_path: Path) -> None:
+    nested = tmp_path / "foo"
+    nested.mkdir()
+    (nested / "bar").write_text("nested\n")
+    (tmp_path / "foo.txt").write_text("sibling\n")
+
+    manifest = build_checksum_manifest(tmp_path)
+
+    assert list(parse_checksum_manifest(manifest)) == ["foo.txt", "foo/bar"]
+
+
 def test_archive_is_independent_of_output_directory_name(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"

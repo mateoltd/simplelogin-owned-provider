@@ -109,14 +109,18 @@ def npm_archive_url(name: str, version: str) -> str:
 
 
 def build_checksum_manifest(directory: Path) -> bytes:
-    entries = []
-    for path in sorted(directory.rglob("*")):
+    files = []
+    for path in directory.rglob("*"):
         if path.is_symlink() or not path.is_file():
             continue
         relative = path.relative_to(directory).as_posix()
         if relative == "SHA256SUMS":
             continue
-        entries.append(f"{sha256_file(path)}  {relative}\n")
+        files.append((relative, path))
+    entries = [
+        f"{sha256_file(path)}  {relative}\n"
+        for relative, path in sorted(files, key=lambda item: item[0])
+    ]
     return "".join(entries).encode("utf-8")
 
 
