@@ -674,6 +674,24 @@ def test_noncanonical_json_is_rejected(tmp_path: Path, policy: ReleasePolicy) ->
         PublicReleaseVerifier(policy).verify(bundle)
 
 
+def test_upstream_json_license_evidence_is_preserved(
+    tmp_path: Path, policy: ReleasePolicy
+) -> None:
+    bundle = make_complete_bundle(tmp_path / "bundle", policy)
+    evidence_path = bundle / "licenses/packages/example/license-db.json"
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_text('{\n  "license": "MIT"\n}\n')
+    graph_path = bundle / "dependencies/graph.json"
+    graph = json.loads(graph_path.read_bytes())
+    graph["components"][2]["license_paths"] = [
+        "licenses/packages/example/license-db.json"
+    ]
+    graph_path.write_bytes(canonical_json(graph) + b"\n")
+    rewrite_checksums(bundle)
+
+    assert PublicReleaseVerifier(policy).verify(bundle)["verified"] is True
+
+
 def test_stale_lock_is_rejected(tmp_path: Path, policy: ReleasePolicy) -> None:
     bundle = make_complete_bundle(tmp_path / "bundle", policy)
     repository = tmp_path / "repository"

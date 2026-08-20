@@ -2302,6 +2302,8 @@ class PublicReleaseVerifier:
             if sha256_file(bundle / relative) != expected:
                 raise ReleaseError(f"bundle checksum mismatch: {relative}")
         for path in bundle.rglob("*.json"):
+            if path.relative_to(bundle).parts[0] == "licenses":
+                continue
             raw = path.read_bytes()
             try:
                 value = json.loads(raw)
