@@ -129,6 +129,19 @@ ambiguous or mismatched licenses, missing source or notice material, incomplete
 container scans, mismatched runtime closures, noncanonical JSON, and checksum or
 SBOM disagreement. Rewriting `SHA256SUMS` cannot bypass the semantic verifier.
 
+The secret gate uses the Gitleaks 8.30.1 default rules. Its reviewed macOS arm64
+release archive SHA-256 is
+`b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5`.
+Seven public test fixture or example paths are allowlisted because the upstream
+tree intentionally contains test private keys and token-shaped examples. Every
+complete file is SHA-256-pinned in `public-release-policy.toml`; a byte change
+fails before the allowlisted scan runs:
+
+```sh
+python3 ops/owned-provider/scripts/public_release_bundle.py secret-scan \
+  --repository "$PWD" --gitleaks /reviewed/path/to/gitleaks
+```
+
 ## Final Mail Edge pin
 
 After the final commit is advertised by the Mail Edge live origin, substitute

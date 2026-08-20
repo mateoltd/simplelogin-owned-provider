@@ -29,9 +29,11 @@ from public_release_bundle import (  # noqa: E402
     parse_checksum_manifest,
     parse_pnpm_lock,
     resolve_license,
+    run_secret_scan,
     sha256_bytes,
     spdx_document,
     validate_relative_path,
+    verify_secret_allowlist,
 )
 
 POLICY_PATH = REPOSITORY / "ops" / "owned-provider" / "public-release-policy.toml"
@@ -58,6 +60,24 @@ def source_tar(files: dict[str, bytes]) -> bytes:
 
 def sri(payload: bytes) -> str:
     return "sha256-" + base64.b64encode(bytes.fromhex(sha256_bytes(payload))).decode()
+
+
+class SecretScanRunner:
+    def __init__(self, version: str) -> None:
+        self.version = version
+        self.calls: list[tuple[str, ...]] = []
+
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        cwd: Path | None = None,
+        text: bool = True,
+    ) -> str:
+        assert cwd == REPOSITORY
+        assert text is True
+        self.calls.append(arguments)
+        return self.version if arguments[-1] == "version" else ""
 
 
 def rewrite_checksums(bundle: Path) -> None:
@@ -407,6 +427,34 @@ def test_paddle_fallback_is_absent() -> None:
         "templates/dashboard/pricing.html",
     ):
         assert "/static/vendor/paddle.js" not in (REPOSITORY / relative).read_text()
+
+
+def test_secret_allowlist_is_byte_pinned(policy: ReleasePolicy, tmp_path: Path) -> None:
+    result = verify_secret_allowlist(REPOSITORY, policy)
+    assert result["verified"] is True
+    assert result["fixture_count"] == 7
+    first = next(iter(policy.secret_fixture_hashes))
+    hostile = tmp_path / first
+    hostile.parent.mkdir(parents=True)
+    hostile.write_text("substituted secret fixture\n")
+    with pytest.raises(ReleaseError, match="fixture bytes changed"):
+        verify_secret_allowlist(tmp_path, policy)
+
+
+def test_secret_scan_pins_tool_and_runs_tree_and_history(
+    policy: ReleasePolicy,
+) -> None:
+    runner = SecretScanRunner(policy.gitleaks_version)
+    result = run_secret_scan(REPOSITORY, policy, Path("/reviewed/gitleaks"), runner)
+    assert result == {
+        "fixture_count": 7,
+        "gitleaks_version": policy.gitleaks_version,
+        "verified": True,
+    }
+    assert [call[1] for call in runner.calls] == ["version", "dir", "git"]
+    stale = SecretScanRunner("0.0.0")
+    with pytest.raises(ReleaseError, match="version differs"):
+        run_secret_scan(REPOSITORY, policy, Path("/reviewed/gitleaks"), stale)
 
 
 def test_complete_bundle_verifies(tmp_path: Path, policy: ReleasePolicy) -> None:

@@ -1,0 +1,26 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Byte-pinned public test fixtures and examples; run the public-release secret-fixtures gate before this scan."
+paths = [
+  '''^app/api/views/apple\.py$''',
+  '''^local_data/dkim\.key$''',
+  '''^local_data/jwtRS256\.key$''',
+  '''^local_data/key\.pem$''',
+  '''^local_data/private-pgp\.asc$''',
+  '''^tests/proton/test_proton_client\.py$''',
+  '''^tests/test_owned_provider_logging\.py$''',
+]
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Reviewed fixture SHA-256 declarations are hashes, not credentials."
+condition = "AND"
+regexTarget = "secret"
+paths = ['''^ops/owned-provider/public-release-policy\.toml$''']
+regexes = [
+  '''^[0-9a-f]{64}$''',
+]

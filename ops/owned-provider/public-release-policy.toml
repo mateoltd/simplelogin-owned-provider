@@ -21,6 +21,10 @@ license_list_origin = "https://github.com/spdx/license-list-data.git"
 license_list_commit = "c4a7237ec8f4654e867546f9f409749300f1bf4c"
 license_list_tag = "v3.28.0"
 
+[tooling]
+gitleaks_version = "8.30.1"
+gitleaks_darwin_arm64_archive_sha256 = "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5"
+
 [distribution_scope]
 owned_provider_source_archive = "conveyed"
 mail_edge_source_archive = "conveyed"
@@ -36,6 +40,15 @@ maximum_download_bytes = 536870912
 maximum_archive_members = 200000
 maximum_license_bytes = 2097152
 maximum_license_files_per_component = 256
+
+[secret_fixture_sha256]
+"app/api/views/apple.py" = "31d50c8771d9fdd9248761ff2137bb5117ba671fda94a63b2ad6db40ebb90c40"
+"local_data/dkim.key" = "1c86748b8e445f96c4caaf1742a3d29fd628e5c08fc0dd9f0b45dd49a10326a6"
+"local_data/jwtRS256.key" = "9d728f837911f5fc48368d9fbe5241066d882f3b8632ec73c168d69dba02d291"
+"local_data/key.pem" = "0c5b5f75740fa29f831e684248b23b92120707bdc5f67ef422b19da446799f8b"
+"local_data/private-pgp.asc" = "666b8d71c1fee6e85abfacdac70333068656116a6b786d0d4d3917924aec4f14"
+"tests/proton/test_proton_client.py" = "d967423aea9810922ce9925b8031b7359d7575160895a25dee529b4d2a8c02e7"
+"tests/test_owned_provider_logging.py" = "f5d80702be69e4bc3ad6d6aff6498f12e5d6370fdb28fdc4a2844ddc793200f3"
 
 [license_overrides.python]
 "aiosmtpd@1.4.6" = "Apache-2.0"

@@ -298,11 +298,14 @@ class ReleasePolicy:
     spdx_origin: str
     spdx_commit: str
     spdx_tag: str
+    gitleaks_version: str
+    gitleaks_archive_sha256: str
     distribution_scope: Mapping[str, str]
     maximum_download_bytes: int
     maximum_archive_members: int
     maximum_license_bytes: int
     maximum_license_files: int
+    secret_fixture_hashes: Mapping[str, str]
     python_overrides: Mapping[str, str]
     npm_overrides: Mapping[str, str]
     vendored: tuple[VendoredComponent, ...]
@@ -317,6 +320,7 @@ class ReleasePolicy:
         repository = raw["repository"]
         mail_edge = raw["mail_edge"]
         spdx = raw["spdx"]
+        tooling = raw["tooling"]
         limits = raw["limits"]
         commit_values = (
             repository["integration_commit"],
@@ -324,6 +328,11 @@ class ReleasePolicy:
         )
         if any(SOURCE_SHA.fullmatch(value) is None for value in commit_values):
             raise ReleaseError("policy contains a non-exact Git commit")
+        if (
+            re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", tooling["gitleaks_version"]) is None
+            or SHA256.fullmatch(tooling["gitleaks_darwin_arm64_archive_sha256"]) is None
+        ):
+            raise ReleaseError("policy contains an invalid Gitleaks pin")
         vendored = tuple(
             VendoredComponent(
                 name=item["name"],
@@ -335,6 +344,15 @@ class ReleasePolicy:
             )
             for item in raw.get("vendored_components", [])
         )
+        secret_fixture_hashes = dict(
+            sorted(raw.get("secret_fixture_sha256", {}).items())
+        )
+        if len(secret_fixture_hashes) != 7:
+            raise ReleaseError("reviewed secret fixture set must contain seven files")
+        for relative, digest in secret_fixture_hashes.items():
+            validate_relative_path(relative)
+            if SHA256.fullmatch(digest) is None:
+                raise ReleaseError("reviewed secret fixture hash is invalid")
         return cls(
             path=path.resolve(),
             format_name=raw["bundle_format"],
@@ -352,16 +370,85 @@ class ReleasePolicy:
             spdx_origin=normalize_origin(spdx["license_list_origin"]),
             spdx_commit=spdx["license_list_commit"],
             spdx_tag=spdx["license_list_tag"],
+            gitleaks_version=tooling["gitleaks_version"],
+            gitleaks_archive_sha256=tooling["gitleaks_darwin_arm64_archive_sha256"],
             distribution_scope=dict(sorted(raw["distribution_scope"].items())),
             maximum_download_bytes=int(limits["maximum_download_bytes"]),
             maximum_archive_members=int(limits["maximum_archive_members"]),
             maximum_license_bytes=int(limits["maximum_license_bytes"]),
             maximum_license_files=int(limits["maximum_license_files_per_component"]),
+            secret_fixture_hashes=secret_fixture_hashes,
             python_overrides=dict(raw.get("license_overrides", {}).get("python", {})),
             npm_overrides=dict(raw.get("license_overrides", {}).get("npm", {})),
             vendored=vendored,
             source_assets=tuple(raw.get("source_assets", [])),
         )
+
+
+def verify_secret_allowlist(
+    repository: Path, policy: ReleasePolicy
+) -> Mapping[str, Any]:
+    repository = repository.resolve()
+    verified = []
+    for relative, expected in policy.secret_fixture_hashes.items():
+        path = repository / validate_relative_path(relative)
+        if not path.is_file() or path.is_symlink():
+            raise ReleaseError(f"reviewed secret fixture is missing: {relative}")
+        if sha256_file(path) != expected:
+            raise ReleaseError(f"reviewed secret fixture bytes changed: {relative}")
+        verified.append(relative)
+    return {
+        "fixture_count": len(verified),
+        "fixtures": verified,
+        "verified": True,
+    }
+
+
+def run_secret_scan(
+    repository: Path,
+    policy: ReleasePolicy,
+    gitleaks: Path,
+    runner: CommandRunner | None = None,
+) -> Mapping[str, Any]:
+    repository = repository.resolve()
+    runner = runner or SubprocessRunner()
+    fixtures = verify_secret_allowlist(repository, policy)
+    version = str(runner.run((str(gitleaks), "version"), cwd=repository)).strip()
+    if version != policy.gitleaks_version:
+        raise ReleaseError(
+            f"Gitleaks version differs from policy: {version or 'missing'}"
+        )
+    config = repository / "ops/owned-provider/gitleaks.toml"
+    runner.run(
+        (
+            str(gitleaks),
+            "dir",
+            "--config",
+            str(config),
+            "--no-banner",
+            "--redact",
+            ".",
+        ),
+        cwd=repository,
+    )
+    runner.run(
+        (
+            str(gitleaks),
+            "git",
+            "--config",
+            str(config),
+            "--no-banner",
+            "--redact",
+            f"--log-opts={policy.integration_commit}..HEAD",
+            ".",
+        ),
+        cwd=repository,
+    )
+    return {
+        "fixture_count": fixtures["fixture_count"],
+        "gitleaks_version": version,
+        "verified": True,
+    }
 
 
 class ArtifactFetcher:
@@ -1301,6 +1388,7 @@ class PublicReleaseBuilder:
             raise ReleaseError("Mail Edge repository path is not its exact root")
         if not repository.is_clean() or not mail_edge.is_clean():
             raise ReleaseError("source repositories must be clean")
+        verify_secret_allowlist(repository.path, self.policy)
         if repository.branch() != self.policy.release_branch:
             raise ReleaseError("owned-provider release branch is not selected")
         if repository.origin() != self.policy.repository_origin:
@@ -2494,6 +2582,11 @@ def main() -> None:
     verify.add_argument("--bundle", type=Path, required=True)
     verify.add_argument("--repository", type=Path)
     verify.add_argument("--mail-edge-repository", type=Path)
+    secret_fixtures = commands.add_parser("secret-fixtures")
+    secret_fixtures.add_argument("--repository", type=Path, required=True)
+    secret_scan = commands.add_parser("secret-scan")
+    secret_scan.add_argument("--repository", type=Path, required=True)
+    secret_scan.add_argument("--gitleaks", type=Path, required=True)
     args = parser.parse_args()
     policy = ReleasePolicy.load(args.policy)
     if args.command == "generate":
@@ -2531,10 +2624,16 @@ def main() -> None:
             ).decode(),
             end="",
         )
-    else:
+    elif args.command == "verify":
         result = PublicReleaseVerifier(policy).verify(
             args.bundle.resolve(), args.repository, args.mail_edge_repository
         )
+        print(canonical_json(result).decode(), end="")
+    elif args.command == "secret-fixtures":
+        result = verify_secret_allowlist(args.repository, policy)
+        print(canonical_json(result).decode(), end="")
+    else:
+        result = run_secret_scan(args.repository, policy, args.gitleaks)
         print(canonical_json(result).decode(), end="")
 
 
@@ -2555,9 +2654,11 @@ __all__ = [
     "parse_checksum_manifest",
     "parse_pnpm_lock",
     "resolve_license",
+    "run_secret_scan",
     "sha256_bytes",
     "spdx_document",
     "validate_relative_path",
+    "verify_secret_allowlist",
 ]
 
 
