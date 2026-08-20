@@ -242,22 +242,22 @@ def make_complete_bundle(root: Path, policy: ReleasePolicy) -> Path:
             "version": "1",
         },
     ]
-    for index in range(1109):
+    for index in range(1111):
         if index < 115:
             ecosystem = "pypi"
             scope = "runtime"
             source_archive_path = "sources/projects/owned.tar.gz"
-        elif index < 154:
+        elif index < 156:
             ecosystem = "npm"
             scope = "runtime"
             source_archive_path = "sources/projects/owned.tar.gz"
-        elif index < 158:
+        elif index < 160:
             ecosystem = "vendored-npm"
             scope = "vendored"
             source_archive_path = "sources/projects/owned.tar.gz"
         else:
             ecosystem = "mail-edge-npm"
-            scope = "production" if index < 349 else "build"
+            scope = "production" if index < 351 else "build"
             source_archive_path = None
         components.append(
             {
@@ -285,7 +285,7 @@ def make_complete_bundle(root: Path, policy: ReleasePolicy) -> Path:
         "counts": {
             "mail_edge_full_lock": 951,
             "mail_edge_production": 191,
-            "owned_provider_npm_runtime": 39,
+            "owned_provider_npm_runtime": 41,
             "owned_provider_python_runtime": 115,
             "vendored": 4,
         },
@@ -488,8 +488,36 @@ snapshots:
 
 def test_repository_frontend_closure_is_reviewed() -> None:
     components = npm_lock_components(REPOSITORY)
-    assert len(components) == 39
+    assert len(components) == 41
     assert all(component.scope == "runtime" for component in components)
+    by_name = {component.name: component for component in components}
+    assert {"@popperjs/core", "bootstrap", "jquery"}.issubset(by_name)
+    assert by_name["bootstrap"].bom_ref in by_name["bootbox"].dependencies
+    assert by_name["@popperjs/core"].bom_ref in by_name["bootbox"].dependencies
+    assert by_name["jquery"].bom_ref in by_name["bootbox"].dependencies
+    assert by_name["@popperjs/core"].bom_ref in by_name["bootstrap"].dependencies
+
+
+def test_required_npm_peer_must_exist(tmp_path: Path) -> None:
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "packages": {
+                    "": {"dependencies": {"root": "1.0.0"}},
+                    "node_modules/root": {
+                        "version": "1.0.0",
+                        "resolved": "https://registry.npmjs.org/root/-/root-1.0.0.tgz",
+                        "integrity": sri(b"root"),
+                        "peerDependencies": {"missing": "^1.0.0"},
+                    },
+                }
+            }
+        )
+    )
+    with pytest.raises(ReleaseError, match="required npm peer dependency is absent"):
+        npm_lock_components(tmp_path)
 
 
 def test_paddle_fallback_is_absent() -> None:
@@ -536,7 +564,7 @@ def test_complete_bundle_verifies(tmp_path: Path, policy: ReleasePolicy) -> None
     bundle = make_complete_bundle(tmp_path / "bundle", policy)
     result = PublicReleaseVerifier(policy).verify(bundle)
     assert result["verified"] is True
-    assert result["component_count"] == 1111
+    assert result["component_count"] == 1113
 
 
 def test_tampered_payload_is_rejected(tmp_path: Path, policy: ReleasePolicy) -> None:

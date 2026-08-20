@@ -38,7 +38,7 @@ For the current pins, generation resolves and inspects:
 | Graph | Records | Runtime or production closure | Source of identity |
 | --- | ---: | ---: | --- |
 | owned-provider Python | 115 | 115 | `uv.lock` plus `runtime-python.txt` |
-| owned-provider frontend npm | 39 | 39 | production reachability in `static/package-lock.json` |
+| owned-provider frontend npm | 41 | 41 | installed production and peer reachability in `static/package-lock.json` |
 | Mail Edge pnpm | 951 | 191 | every package and snapshot plus importer reachability in the pinned `pnpm-lock.yaml` |
 | reviewed vendored npm | 4 | 4 | exact registry URL and SRI in `public-release-policy.toml` |
 | project roots | 2 | 2 | exact live Git commits and tree provenance |

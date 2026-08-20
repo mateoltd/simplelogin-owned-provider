@@ -966,6 +966,42 @@ def python_components(repository: Path) -> tuple[Component, ...]:
 def npm_lock_components(repository: Path) -> tuple[Component, ...]:
     lock = json.loads((repository / "static/package-lock.json").read_text())
     packages: Mapping[str, Any] = lock["packages"]
+
+    def resolve_path(parent: str, name: str) -> str | None:
+        base = parent
+        while True:
+            candidate = f"{base}/node_modules/{name}"
+            if candidate in packages:
+                return candidate
+            base, separator, _ = base.rpartition("/node_modules/")
+            if not separator:
+                candidate = f"node_modules/{name}"
+                return candidate if candidate in packages else None
+
+    def installed_dependencies(path: str, item: Mapping[str, Any]) -> set[str]:
+        resolved = set()
+        for dependency_kind in ("dependencies", "optionalDependencies"):
+            for name in item.get(dependency_kind, {}):
+                target = resolve_path(path, name)
+                if target is None:
+                    if dependency_kind == "dependencies":
+                        raise ReleaseError(
+                            f"required npm dependency is absent from lock: {path} -> {name}"
+                        )
+                    continue
+                resolved.add(target)
+        peer_metadata = item.get("peerDependenciesMeta", {})
+        for name in item.get("peerDependencies", {}):
+            target = resolve_path(path, name)
+            if target is None:
+                if not peer_metadata.get(name, {}).get("optional", False):
+                    raise ReleaseError(
+                        f"required npm peer dependency is absent from lock: {path} -> {name}"
+                    )
+                continue
+            resolved.add(target)
+        return resolved
+
     roots = set(packages[""]["dependencies"])
     reachable: set[str] = set()
     pending = [f"node_modules/{name}" for name in sorted(roots)]
@@ -979,28 +1015,18 @@ def npm_lock_components(repository: Path) -> tuple[Component, ...]:
                 f"npm production dependency is absent or dev-only: {path}"
             )
         reachable.add(path)
-        pending.extend(
-            f"node_modules/{name}" for name in sorted(item.get("dependencies", {}))
-        )
-        pending.extend(
-            f"node_modules/{name}"
-            for name in sorted(item.get("optionalDependencies", {}))
-            if f"node_modules/{name}" in packages
-        )
+        pending.extend(sorted(installed_dependencies(path, item)))
     refs = {
-        path: f"pkg:npm/{urllib.parse.quote(path.removeprefix('node_modules/'), safe='@')}@{packages[path]['version']}"
+        path: f"pkg:npm/{urllib.parse.quote(path.rsplit('node_modules/', 1)[1], safe='@')}@{packages[path]['version']}"
         for path in reachable
     }
     components = []
     for path in sorted(reachable):
         item = packages[path]
-        name = path.removeprefix("node_modules/")
+        name = path.rsplit("node_modules/", 1)[1]
         dependencies = tuple(
             sorted(
-                refs[f"node_modules/{dependency}"]
-                for dependency in set(item.get("dependencies", {}))
-                | set(item.get("optionalDependencies", {}))
-                if f"node_modules/{dependency}" in refs
+                refs[dependency] for dependency in installed_dependencies(path, item)
             )
         )
         components.append(
@@ -1018,9 +1044,9 @@ def npm_lock_components(repository: Path) -> tuple[Component, ...]:
                 properties={"lock_path": path},
             )
         )
-    if len(components) != 39:
+    if len(components) != 41:
         raise ReleaseError(
-            f"npm production closure changed: expected 39, got {len(components)}"
+            f"npm production closure changed: expected 41, got {len(components)}"
         )
     return tuple(components)
 
@@ -2326,7 +2352,7 @@ class PublicReleaseVerifier:
             raise ReleaseError("dependency graph counts differ from components")
         if expected_counts["owned_provider_python_runtime"] != 115:
             raise ReleaseError("owned-provider Python closure differs from review")
-        if expected_counts["owned_provider_npm_runtime"] != 39:
+        if expected_counts["owned_provider_npm_runtime"] != 41:
             raise ReleaseError("owned-provider npm closure differs from review")
         if expected_counts["vendored"] != 4:
             raise ReleaseError("vendored component closure differs from review")
