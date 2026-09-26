@@ -235,7 +235,7 @@ def test_email_search_user_with_paddle_subscription_shows_link(flask_client):
     Session.commit()
 
     r = flask_client.get(
-        url_for("admin.email_search.index"),
+        url_for("email_search.index"),
         query_string={"query": test_user.email, "search_type": "email"},
     )
     assert r.status_code == 200
@@ -252,7 +252,7 @@ def test_email_search_user_without_paddle_subscription_has_no_link(flask_client)
     Session.commit()
 
     r = flask_client.get(
-        url_for("admin.email_search.index"),
+        url_for("email_search.index"),
         query_string={"query": test_user.email, "search_type": "email"},
     )
     assert r.status_code == 200
@@ -281,7 +281,7 @@ def test_email_search_expired_paddle_subscription_still_shows_link(flask_client)
     assert test_user.get_paddle_subscription() is None
 
     r = flask_client.get(
-        url_for("admin.email_search.index"),
+        url_for("email_search.index"),
         query_string={"query": test_user.email, "search_type": "email"},
     )
     assert r.status_code == 200
