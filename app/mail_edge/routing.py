@@ -54,13 +54,16 @@ class ReverseRoute:
 
 
 class AliasRoutingRepository(Protocol):
-    def resolve_or_create(self, address: str, domain: str) -> Optional[AliasRoute]: ...
+    def resolve_or_create(self, address: str, domain: str) -> Optional[AliasRoute]:
+        ...
 
     def resolve_reverse(
         self, reply_address: str, domain: str
-    ) -> Optional[ReverseAliasRoute]: ...
+    ) -> Optional[ReverseAliasRoute]:
+        ...
 
-    def resolve_destination(self, alias_id: int) -> Optional[AliasRoute]: ...
+    def resolve_destination(self, alias_id: int) -> Optional[AliasRoute]:
+        ...
 
 
 class OpaqueAliasTokenCodec:

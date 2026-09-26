@@ -1787,7 +1787,8 @@ class ComplianceBundleVerifier:
 
 
 class CommandRunner(Protocol):
-    def run(self, args: Sequence[str]) -> str: ...
+    def run(self, args: Sequence[str]) -> str:
+        ...
 
 
 class SubprocessRunner:
