@@ -2,7 +2,7 @@
 
 This directory is a reusable, production operations overlay for SimpleLogin.
 `UPSTREAM_COMMIT` machine-checks the official upstream pin
-`dbc45fcce4e8e6b4fa615cc729ca95a67bf75266`. The allowlisted fork delta consists
+`995904d5bc08ff5f951ad794b9372cbeb04d5fb6`. The allowlisted fork delta consists
 of this operations overlay, the provider-neutral `app/mail_edge` host, and the
 reviewed dependency-security migrations for the legacy Flask, authentication,
 crypto, persistence, and mail paths. The host audit rejects changes outside

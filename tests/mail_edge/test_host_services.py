@@ -128,8 +128,9 @@ def test_application_delivery_verifies_raw_and_acks_only_after_host_acceptance()
         callbacks,
         Bindings(),
         Destinations(),
-        lambda envelope, message: delivered.append((envelope, message))
-        or "250 accepted",
+        lambda envelope, message: (
+            delivered.append((envelope, message)) or "250 accepted"
+        ),
         parser(),
         clock=lambda: datetime(2026, 8, 13, 12, 1, tzinfo=timezone.utc),
     )

@@ -256,8 +256,7 @@ def main():
             }
             if invalid_secret_files:
                 raise RuntimeError(
-                    f"service {service} has unsafe secret files: "
-                    f"{invalid_secret_files}"
+                    f"service {service} has unsafe secret files: {invalid_secret_files}"
                 )
             mail_edge_mounts[service] = {
                 "config": "/run/mail-edge" in destinations,

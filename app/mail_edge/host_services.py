@@ -23,8 +23,7 @@ from .security import (
 
 
 class ReplayNonces(Protocol):
-    def consume(self, key_id: str, nonce: str, expires_at: datetime) -> None:
-        ...
+    def consume(self, key_id: str, nonce: str, expires_at: datetime) -> None: ...
 
 
 class CallbackClaim(Protocol):
@@ -41,26 +40,21 @@ class CallbackReceipts(Protocol):
         subject_id: str,
         body_sha256: str,
         lease_seconds: int,
-    ) -> CallbackClaim:
-        ...
+    ) -> CallbackClaim: ...
 
     def complete(
         self, receipt_id: int, fence: int, acknowledgement: Mapping[str, object]
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def start_business_effect(self, receipt_id: int, fence: int) -> None:
-        ...
+    def start_business_effect(self, receipt_id: int, fence: int) -> None: ...
 
 
 class BindingAuthorizer(Protocol):
-    def authorize_delivery(self, binding) -> bool:
-        ...
+    def authorize_delivery(self, binding) -> bool: ...
 
 
 class DestinationResolver(Protocol):
-    def resolve_destination(self, destination, envelope):
-        ...
+    def resolve_destination(self, destination, envelope): ...
 
 
 class AuthenticatedHostOperations:

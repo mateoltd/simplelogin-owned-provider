@@ -23,7 +23,7 @@ Both locally built images now carry these exact labels:
 ```text
 org.opencontainers.image.source=https://github.com/mateoltd/simplelogin-owned-provider
 org.opencontainers.image.revision=<exact owned-provider Git commit>
-org.opencontainers.image.upstream.revision=dbc45fcce4e8e6b4fa615cc729ca95a67bf75266
+org.opencontainers.image.upstream.revision=995904d5bc08ff5f951ad794b9372cbeb04d5fb6
 org.opencontainers.image.licenses=AGPL-3.0-only
 ```
 

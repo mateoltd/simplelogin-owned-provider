@@ -98,9 +98,9 @@ def test_operator_credentials_are_separate_scopes_and_cannot_be_reused(tmp_path)
     assert config.operator_authentication.operator_bearer_token == "u" * 32
     assert config.operator_authentication.privileged_operator_bearer_token == "p" * 32
 
-    document["operatorAuthentication"][
-        "privilegedOperatorBearerToken"
-    ] = "secret://operator"
+    document["operatorAuthentication"]["privilegedOperatorBearerToken"] = (
+        "secret://operator"
+    )
     path.write_text(json.dumps(document))
     with pytest.raises(MailEdgeConfigurationError):
         load_mail_edge_configuration(str(path))
