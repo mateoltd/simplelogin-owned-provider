@@ -95,3 +95,6 @@ Runbooks:
 - [Dependency advisory reachability](DEPENDENCY_AUDIT.md)
 - [Runtime and distribution licenses](DISTRIBUTION.md)
 - [Production readiness boundary](PRODUCTION_AUDIT.md)
+
+For per-user local enrollment, system SMTP and resource preflight, see
+[Local development](LOCAL_DEVELOPMENT.md).
