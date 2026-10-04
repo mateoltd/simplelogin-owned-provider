@@ -451,24 +451,33 @@ class OutboundProjectionRepository:
         projection.feedback_kind = feedback.kind
 
     def project_status(self, tenant_id: str, intent) -> None:
-        projection = MailEdgeOutboundProjection.filter_by(
-            tenant_id=tenant_id, intent_id=intent.intent_id
-        ).first()
-        if projection is None:
-            raise MailEdgeContractError(
-                "OUTBOUND_PROJECTION_NOT_FOUND", http_status=404
+        try:
+            # Serialize version checks with writes and refresh any cached identity.
+            projection = (
+                MailEdgeOutboundProjection.filter_by(
+                    tenant_id=tenant_id, intent_id=intent.intent_id
+                )
+                .populate_existing()
+                .with_for_update()
+                .first()
             )
-        if projection.request_fingerprint != intent.fingerprint:
-            raise MailEdgeAmbiguousDeliveryError("OUTBOUND_FINGERPRINT_CONFLICT")
-        if intent.version < projection.version:
-            return
-        if intent.version == projection.version:
-            if intent.state != projection.state:
-                raise MailEdgeAmbiguousDeliveryError("OUTBOUND_VERSION_CONFLICT")
-            return
-        if not outbound_state_reachable(projection.state, intent.state):
-            raise MailEdgeAmbiguousDeliveryError("OUTBOUND_STATE_REGRESSION")
-        projection.state = intent.state
-        projection.version = intent.version
-        projection.quarantined = intent.state == "quarantined_unknown"
-        Session.commit()
+            if projection is None:
+                raise MailEdgeContractError(
+                    "OUTBOUND_PROJECTION_NOT_FOUND", http_status=404
+                )
+            if projection.request_fingerprint != intent.fingerprint:
+                raise MailEdgeAmbiguousDeliveryError("OUTBOUND_FINGERPRINT_CONFLICT")
+            if intent.version == projection.version:
+                if intent.state != projection.state:
+                    raise MailEdgeAmbiguousDeliveryError("OUTBOUND_VERSION_CONFLICT")
+            elif intent.version > projection.version:
+                if not outbound_state_reachable(projection.state, intent.state):
+                    raise MailEdgeAmbiguousDeliveryError("OUTBOUND_STATE_REGRESSION")
+                projection.state = intent.state
+                projection.version = intent.version
+                projection.quarantined = intent.state == "quarantined_unknown"
+            # No-op updates must also release the row lock.
+            Session.commit()
+        except Exception:
+            Session.rollback()
+            raise

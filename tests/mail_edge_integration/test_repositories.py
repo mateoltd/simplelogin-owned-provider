@@ -2,6 +2,16 @@ import hashlib
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from threading import Event, Thread, current_thread
+from time import monotonic, sleep
+from uuid import uuid4
+
+from sqlalchemy import text
+from sqlalchemy.orm import Query, scoped_session, sessionmaker
+
+import app.models as models
+import app.mail_edge.repository as repository_module
+from app.db import engine
 
 import pytest
 
@@ -23,6 +33,7 @@ from app.mail_edge.repository import (
 from app.mail_edge.simplelogin_repository import SimpleLoginAliasRoutingRepository
 from app.models import (
     CustomDomain,
+    Contact,
     MailEdgeCallbackReceipt,
     MailEdgeOutboundProjection,
     MailEdgeReplayNonce,
@@ -251,3 +262,202 @@ def test_outbound_quarantine_and_feedback_projection_is_tenant_scoped(flask_clie
         subject_id=feedback.feedback_event_id,
     ).delete()
     Session.commit()
+
+
+@pytest.mark.parametrize(
+    "invalid_state", ["unverified", "unowned", "deleting", "unknown"]
+)
+def test_reverse_route_rejects_alias_domain_when_authority_is_lost(
+    flask_client, invalid_state
+):
+    user = create_new_user()
+    user.lifetime = True
+    custom_domain = CustomDomain.create(
+        user_id=user.id,
+        domain=random_domain(),
+        verified=True,
+        ownership_verified=True,
+        flush=True,
+    )
+    alias = Alias.create(
+        user_id=user.id,
+        email=f"alias@{custom_domain.domain}",
+        custom_domain_id=custom_domain.id,
+        mailbox_id=user.default_mailbox_id,
+        flush=True,
+    )
+    contact = Contact.create(
+        user_id=user.id,
+        alias_id=alias.id,
+        website_email="recipient@example.net",
+        reply_email="route-authority@sl.lan",
+        flush=True,
+    )
+    Session.commit()
+    repository = SimpleLoginAliasRoutingRepository()
+    assert repository.resolve_reverse(contact.reply_email, "sl.lan") is not None
+    if invalid_state == "unverified":
+        custom_domain.verified = False
+    elif invalid_state == "unowned":
+        custom_domain.ownership_verified = False
+    elif invalid_state == "deleting":
+        custom_domain.pending_deletion = True
+    else:
+        alias.custom_domain_id = None
+    Session.commit()
+    assert repository.resolve_destination(alias.id) is None
+    assert repository.resolve_reverse(contact.reply_email, "sl.lan") is None
+
+
+@pytest.mark.parametrize("newer_state", ["provider_accepted", "quarantined_unknown"])
+def test_outbound_status_is_monotonic_across_independent_transactions(
+    monkeypatch, newer_state
+):
+    # The normal client fixture uses one outer transaction. This regression needs
+    # real committed rows and independently pooled PostgreSQL connections.
+    older_read, release_older, newer_done = Event(), Event(), Event()
+    failures, backend_pids = [], {}
+
+    class PausingQuery(Query):
+        def first(self):
+            row = super().first()
+            if current_thread().name == "older-status" and row is not None:
+                older_read.set()
+                if not release_older.wait(5):
+                    raise RuntimeError("Older status was not released")
+            return row
+
+    sessions = scoped_session(sessionmaker(bind=engine, query_cls=PausingQuery))
+    monkeypatch.setattr(models, "Session", sessions)
+    monkeypatch.setattr(repository_module, "Session", sessions)
+    intent_id = str(uuid4())
+    user = models.User(email=f"projection-{intent_id}@example.invalid")
+    sessions.add(user)
+    sessions.flush()
+    user_id = user.id
+    mailbox = models.Mailbox(user_id=user.id, email=user.email, verified=True)
+    sessions.add(mailbox)
+    sessions.flush()
+    alias = models.Alias(
+        user_id=user.id, email=f"projection-{intent_id}@sl.lan", mailbox_id=mailbox.id
+    )
+    sessions.add(alias)
+    sessions.flush()
+    sessions.add(
+        MailEdgeOutboundProjection(
+            tenant_id=TENANT_ID,
+            intent_id=intent_id,
+            user_id=user.id,
+            alias_id=alias.id,
+            state="accepted",
+            request_fingerprint="f" * 64,
+            version=0,
+        )
+    )
+    sessions.commit()
+    sessions.remove()
+
+    def project(name, state, version):
+        try:
+            backend_pids[name] = sessions.execute(
+                text("SELECT pg_backend_pid()")
+            ).scalar_one()
+            OutboundProjectionRepository().project_status(
+                TENANT_ID,
+                SimpleNamespace(
+                    intent_id=intent_id,
+                    fingerprint="f" * 64,
+                    state=state,
+                    version=version,
+                ),
+            )
+        except Exception as error:
+            failures.append(error)
+        finally:
+            sessions.remove()
+            if name == "newer-status":
+                newer_done.set()
+
+    older = Thread(
+        name="older-status", target=project, args=("older-status", "dispatching", 2)
+    )
+    newer = Thread(
+        name="newer-status",
+        target=project,
+        args=("newer-status", newer_state, 3),
+    )
+    try:
+        older.start()
+        assert older_read.wait(5)
+        newer.start()
+        # Establish either the historical race (newer committed first) or row
+        # serialization (newer is waiting on the older transaction), then release.
+        deadline = monotonic() + 5
+        while not newer_done.is_set():
+            pid = backend_pids.get("newer-status")
+            with engine.connect() as observer:
+                waiting = observer.execute(
+                    text(
+                        "SELECT wait_event_type = 'Lock' FROM pg_stat_activity WHERE pid = :pid"
+                    ),
+                    {"pid": pid},
+                ).scalar()
+            if waiting:
+                break
+            assert (
+                monotonic() < deadline
+            ), "Newer status neither committed nor waited on a row lock"
+            sleep(0.01)
+        release_older.set()
+        older.join(5)
+        newer.join(5)
+        assert not older.is_alive() and not newer.is_alive()
+        assert not failures
+        assert backend_pids["older-status"] != backend_pids["newer-status"]
+        projection = MailEdgeOutboundProjection.filter_by(
+            tenant_id=TENANT_ID, intent_id=intent_id
+        ).one()
+        assert (projection.state, projection.version) == (newer_state, 3)
+        assert projection.quarantined == (newer_state == "quarantined_unknown")
+        repository = OutboundProjectionRepository()
+
+        def status(state, version, fingerprint="f" * 64):
+            return SimpleNamespace(
+                intent_id=intent_id,
+                fingerprint=fingerprint,
+                state=state,
+                version=version,
+            )
+
+        repository.project_status(TENANT_ID, status("dispatching", 2))
+        repository.project_status(TENANT_ID, status(newer_state, 3))
+        with pytest.raises(
+            MailEdgeAmbiguousDeliveryError, match="OUTBOUND_VERSION_CONFLICT"
+        ):
+            repository.project_status(TENANT_ID, status("dispatching", 3))
+        with pytest.raises(
+            MailEdgeAmbiguousDeliveryError, match="OUTBOUND_FINGERPRINT_CONFLICT"
+        ):
+            repository.project_status(TENANT_ID, status("dispatching", 2, "a" * 64))
+        with pytest.raises(
+            MailEdgeContractError, match="OUTBOUND_PROJECTION_NOT_FOUND"
+        ):
+            repository.project_status(str(uuid4()), status(newer_state, 4))
+        projection = MailEdgeOutboundProjection.filter_by(
+            tenant_id=TENANT_ID, intent_id=intent_id
+        ).one()
+        assert (projection.state, projection.version, projection.quarantined) == (
+            newer_state,
+            3,
+            newer_state == "quarantined_unknown",
+        )
+    finally:
+        release_older.set()
+        if older.ident is not None:
+            older.join(5)
+        if newer.ident is not None:
+            newer.join(5)
+        sessions.rollback()
+        sessions.query(models.User).filter_by(id=user_id).delete()
+        sessions.commit()
+        sessions.remove()

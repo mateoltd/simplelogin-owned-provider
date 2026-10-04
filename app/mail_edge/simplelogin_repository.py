@@ -68,8 +68,11 @@ class SimpleLoginAliasRoutingRepository:
         if len(contacts) != 1 or not contacts[0].user.can_send_or_receive():
             return None
         contact = contacts[0]
+        alias_route = self.resolve_destination(contact.alias_id)
+        if alias_route is None:
+            return None
         return ReverseAliasRoute(
-            alias_address=contact.alias.email,
+            alias_address=alias_route.address,
             target_address=contact.website_email,
             authorized_senders=tuple(contact.alias.authorized_addresses()),
         )
