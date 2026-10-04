@@ -1658,7 +1658,13 @@ def save_envelope_for_debugging(envelope: Envelope, file_name_prefix=None) -> st
             file_name = "{}-{}".format(file_name_prefix, file_name)
 
         with open(os.path.join(config.TEMP_DIR, file_name), "wb") as f:
-            f.write(envelope.original_content)
+            original_content = envelope.original_content
+            if isinstance(original_content, bytes):
+                f.write(original_content)
+            elif hasattr(original_content, "copy_to"):
+                original_content.copy_to(f)
+            else:
+                raise TypeError("Envelope original content is not readable.")
 
         LOG.d("envelope saved to %s", file_name)
         return file_name

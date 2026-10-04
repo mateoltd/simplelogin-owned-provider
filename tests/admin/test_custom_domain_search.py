@@ -62,7 +62,7 @@ def test_custom_domain_search_page_loads(flask_client):
     """Test that the custom domain search page loads without errors."""
     login_admin(flask_client)
 
-    r = flask_client.get(url_for("admin.custom_domain_search.index"))
+    r = flask_client.get(url_for("custom_domain_search.index"))
     assert r.status_code == 200
     assert b"Custom Domain Search" in r.data
 
@@ -71,7 +71,7 @@ def test_custom_domain_search_empty_query(flask_client):
     """Test that empty query shows the search form."""
     login_admin(flask_client)
 
-    r = flask_client.get(url_for("admin.custom_domain_search.index"))
+    r = flask_client.get(url_for("custom_domain_search.index"))
     assert r.status_code == 200
     assert b"Search Query" in r.data
 
@@ -92,7 +92,7 @@ def test_custom_domain_search_by_domain_name(flask_client):
     Session.commit()
 
     r = flask_client.get(
-        url_for("admin.custom_domain_search.index"),
+        url_for("custom_domain_search.index"),
         query_string={"query": domain.domain},
     )
     assert r.status_code == 200
@@ -114,7 +114,7 @@ def test_custom_domain_search_by_user_email(flask_client):
     Session.commit()
 
     r = flask_client.get(
-        url_for("admin.custom_domain_search.index"),
+        url_for("custom_domain_search.index"),
         query_string={"query": test_user.email},
     )
     assert r.status_code == 200
@@ -131,7 +131,7 @@ def test_custom_domain_search_by_domain_id(flask_client):
     Session.commit()
 
     r = flask_client.get(
-        url_for("admin.custom_domain_search.index"),
+        url_for("custom_domain_search.index"),
         query_string={"query": str(domain.id)},
     )
     assert r.status_code == 200
@@ -148,7 +148,7 @@ def test_custom_domain_search_by_user_id(flask_client):
     Session.commit()
 
     r = flask_client.get(
-        url_for("admin.custom_domain_search.index"),
+        url_for("custom_domain_search.index"),
         query_string={"query": f"uid:{test_user.id}"},
     )
     assert r.status_code == 200
@@ -168,7 +168,7 @@ def test_custom_domain_search_by_regex(flask_client):
     Session.commit()
 
     r = flask_client.get(
-        url_for("admin.custom_domain_search.index"),
+        url_for("custom_domain_search.index"),
         query_string={"query": f"{unique_prefix}-.*\\.com"},
     )
     assert r.status_code == 200
@@ -181,7 +181,7 @@ def test_custom_domain_search_no_results(flask_client):
     login_admin(flask_client)
 
     r = flask_client.get(
-        url_for("admin.custom_domain_search.index"),
+        url_for("custom_domain_search.index"),
         query_string={"query": "nonexistent-domain-xyz.com"},
     )
     assert r.status_code == 200
@@ -202,7 +202,7 @@ def test_custom_domain_shows_user_link_to_email_search(flask_client):
     Session.commit()
 
     r = flask_client.get(
-        url_for("admin.custom_domain_search.index"),
+        url_for("custom_domain_search.index"),
         query_string={"query": domain.domain},
     )
     assert r.status_code == 200
@@ -228,7 +228,7 @@ def test_custom_domain_shows_verification_status(flask_client):
     Session.commit()
 
     r = flask_client.get(
-        url_for("admin.custom_domain_search.index"),
+        url_for("custom_domain_search.index"),
         query_string={"query": domain.domain},
     )
     assert r.status_code == 200
@@ -254,7 +254,7 @@ def test_custom_domain_shows_domain_info(flask_client):
     Session.commit()
 
     r = flask_client.get(
-        url_for("admin.custom_domain_search.index"),
+        url_for("custom_domain_search.index"),
         query_string={"query": domain.domain},
     )
     assert r.status_code == 200
@@ -277,14 +277,14 @@ def test_custom_domain_search_requires_admin(flask_client):
         follow_redirects=True,
     )
 
-    r = flask_client.get(url_for("admin.custom_domain_search.index"))
+    r = flask_client.get(url_for("custom_domain_search.index"))
     assert r.status_code == 302
 
 
 def test_custom_domain_search_requires_login(flask_client):
     """Test that unauthenticated users cannot access custom domain search."""
     r = flask_client.get(
-        url_for("admin.custom_domain_search.index"),
+        url_for("custom_domain_search.index"),
         follow_redirects=True,
     )
     assert b"login" in r.data.lower() or r.status_code in [302, 403]
@@ -304,7 +304,7 @@ def test_custom_domain_search_user_without_domains(flask_client):
     Session.commit()
 
     r = flask_client.get(
-        url_for("admin.custom_domain_search.index"),
+        url_for("custom_domain_search.index"),
         query_string={"query": test_user.email},
     )
     assert r.status_code == 200

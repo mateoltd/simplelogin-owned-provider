@@ -9,9 +9,11 @@ from app import config
 engine = create_engine(
     config.DB_URI, connect_args={"application_name": config.DB_CONN_NAME}
 )
-connection = engine.connect()
 
-Session = scoped_session(sessionmaker(bind=connection))
+# Production sessions must acquire independent pooled connections. Binding every
+# thread-local Session to one process-global Connection corrupts transactions as
+# soon as two HTTP callbacks overlap.
+Session = scoped_session(sessionmaker(bind=engine))
 
 # Session is actually a proxy, more info on
 # https://docs.sqlalchemy.org/en/14/orm/contextual.html?highlight=scoped_session#implicit-method-access

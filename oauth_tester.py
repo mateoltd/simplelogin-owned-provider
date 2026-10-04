@@ -8,8 +8,7 @@ https://requests-oauthlib.readthedocs.io/en/latest/examples/real_world_example.h
 
 import os
 
-from flask import Flask, request, redirect, session, url_for
-from flask.json import jsonify
+from flask import Flask, jsonify, redirect, request, session, url_for
 from requests_oauthlib import OAuth2Session
 
 app = Flask(__name__)

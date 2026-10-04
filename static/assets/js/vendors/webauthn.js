@@ -10,18 +10,6 @@ function b64enc(buf) {
     .replace(/=/g, "");
 }
 
-function b64RawEnc(buf) {
-  return base64js.fromByteArray(buf).replace(/\+/g, "-").replace(/\//g, "_");
-}
-
-function hexEncode(buf) {
-  return Array.from(buf)
-    .map(function (x) {
-      return ("0" + x.toString(16)).substr(-2);
-    })
-    .join("");
-}
-
 const transformCredentialRequestOptions = (
   credentialRequestOptionsFromServer
 ) => {
@@ -112,11 +100,13 @@ const transformNewAssertionForServer = (newAssertion) => {
     id: newAssertion.id,
     rawId: b64enc(rawId),
     type: newAssertion.type,
-    attObj: b64enc(attObj),
-    clientData: b64enc(clientDataJSON),
-    registrationClientExtensions: JSON.stringify(registrationClientExtensions),
+    response: {
+      attestationObject: b64enc(attObj),
+      clientDataJSON: b64enc(clientDataJSON),
+      transports: transports,
+    },
+    clientExtensionResults: registrationClientExtensions,
     authenticatorAttachment: newAssertion.authenticatorAttachment || null,
-    transports: transports,
   };
 };
 
@@ -130,16 +120,22 @@ const transformAssertionForServer = (newAssertion) => {
   const clientDataJSON = new Uint8Array(newAssertion.response.clientDataJSON);
   const rawId = new Uint8Array(newAssertion.rawId);
   const sig = new Uint8Array(newAssertion.response.signature);
+  const userHandle = newAssertion.response.userHandle === null
+    ? null
+    : b64enc(new Uint8Array(newAssertion.response.userHandle));
   const assertionClientExtensions = newAssertion.getClientExtensionResults();
 
   return {
     id: newAssertion.id,
     rawId: b64enc(rawId),
     type: newAssertion.type,
-    authData: b64RawEnc(authData),
-    clientData: b64RawEnc(clientDataJSON),
-    signature: hexEncode(sig),
-    assertionClientExtensions: JSON.stringify(assertionClientExtensions),
+    response: {
+      authenticatorData: b64enc(authData),
+      clientDataJSON: b64enc(clientDataJSON),
+      signature: b64enc(sig),
+      userHandle: userHandle,
+    },
+    clientExtensionResults: assertionClientExtensions,
     authenticatorAttachment: newAssertion.authenticatorAttachment || null,
   };
 };

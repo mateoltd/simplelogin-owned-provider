@@ -54,7 +54,7 @@
           href="{{ url_for('static', filename='node_modules/intro.js/minified/introjs.min.css') }}" />
     <script src="{{ url_for('static', filename='node_modules/intro.js/minified/intro.min.js') }}"></script>
     <!-- Sentry -->
-    <script src="{{ url_for('static', filename='node_modules/@sentry/browser/build/bundle.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='sentry.bundle.min.js') }}"></script>
     <link rel="stylesheet" href="/static/vendor/bootstrap-social.min.css" />
     <!-- Toastr library -->
     <link rel="stylesheet"
@@ -139,7 +139,7 @@
           // See http://toolbar.conduit.com/Developer/HtmlAndGadget/Methods/JSInjection.aspx
           'conduitPage'
         ],
-        blacklistUrls: [
+        denyUrls: [
           // Facebook flakiness
           /graph\.facebook\.com/i,
           // Facebook blocked

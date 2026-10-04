@@ -33,9 +33,9 @@
           </li>
           <li>
             <a class="list-group-item text-white footer-item "
-               href="https://github.com/simple-login/app">
+               href="https://github.com/mateoltd/simplelogin-owned-provider">
               GitHub
-              <img src="https://img.shields.io/github/stars/simple-login/app?style=social"
+              <img src="https://img.shields.io/github/stars/mateoltd/simplelogin-owned-provider?style=social"
                    alt="GitHub">
             </a>
           </li>
@@ -183,17 +183,18 @@
     introJs().start();
   }
 </script>
-<script src="{{ url_for('static', filename='node_modules/vue/dist/vue.min.js') }}"></script>
+<script src="{{ url_for('static', filename='node_modules/vue/dist/vue.global.prod.js') }}"></script>
 <script>
-  var app = new Vue({
-    el: '#notification-app',
+  var app = Vue.createApp({
     delimiters: ["[[", "]]"], // necessary to avoid conflict with jinja
-    data: {
-      notifications: [],
-      page: 0,
-      loading: true,
-      canLoadMore: false,
-      showNotification: false,
+    data: function () {
+      return {
+        notifications: [],
+        page: 0,
+        loading: true,
+        canLoadMore: false,
+        showNotification: false,
+      };
     },
     computed: {
       has_non_read_notification: function () {
@@ -257,5 +258,5 @@
           that.showNotification = true;
       }
     }
-  })
+  }).mount('#notification-app')
 </script>

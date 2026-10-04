@@ -334,24 +334,22 @@ def construct_alias_query(user: User):
     alias_activity_subquery = (
         Session.query(
             Alias.id,
-            func.sum(case([(EmailLog.is_reply, 1)], else_=0)).label("nb_reply"),
+            func.sum(case((EmailLog.is_reply, 1), else_=0)).label("nb_reply"),
             func.sum(
                 case(
-                    [(and_(EmailLog.is_reply.is_(False), EmailLog.blocked), 1)],
+                    (and_(EmailLog.is_reply.is_(False), EmailLog.blocked), 1),
                     else_=0,
                 )
             ).label("nb_blocked"),
             func.sum(
                 case(
-                    [
-                        (
-                            and_(
-                                EmailLog.is_reply.is_(False),
-                                EmailLog.blocked.is_(False),
-                            ),
-                            1,
-                        )
-                    ],
+                    (
+                        and_(
+                            EmailLog.is_reply.is_(False),
+                            EmailLog.blocked.is_(False),
+                        ),
+                        1,
+                    ),
                     else_=0,
                 )
             ).label("nb_forward"),

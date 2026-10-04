@@ -74,8 +74,8 @@ class TestLegacyImplementation:
         assert fingerprint != ""
 
 
-class TestRustImplementation:
-    """Tests for the Rust sl-pgp implementation (force_use_rust=True)."""
+class TestContextImplementation:
+    """Tests for the source-available reusable PGPy context."""
 
     def test_load_public_key(self, public_key, ctx):
         fingerprint = load_public_key(public_key, ctx, force_use_rust=True)
@@ -127,7 +127,7 @@ class TestRustImplementation:
 
 
 class TestContextReuse:
-    """Tests verifying that context reuse works correctly with Rust implementation."""
+    """Tests verifying that parsed key context reuse works correctly."""
 
     def test_multiple_operations_same_context(self, public_key, ctx):
         """Test that multiple operations can share the same context."""

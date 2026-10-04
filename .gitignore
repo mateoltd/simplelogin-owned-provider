@@ -5,6 +5,7 @@ db.sqlite
 .pytest_cache
 .vscode
 .DS_Store
+/.owned-provider/
 config
 static/node_modules
 db.sqlite-journal

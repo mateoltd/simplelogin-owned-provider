@@ -1,0 +1,410 @@
+x-app: &app
+  image: simplelogin-owned-provider:${OWNED_PROVIDER_SOURCE_COMMIT:?set by owned-provider}
+  platform: linux/amd64
+  build:
+    context: ../..
+    dockerfile: ops/owned-provider/Dockerfile
+    args:
+      BASE_IMAGE: simplelogin-owned-provider-upstream:${OWNED_PROVIDER_SOURCE_COMMIT}
+    labels:
+      org.opencontainers.image.licenses: AGPL-3.0-only
+      org.opencontainers.image.source: https://github.com/mateoltd/simplelogin-owned-provider
+      org.opencontainers.image.upstream.source: https://github.com/simple-login/app
+      org.opencontainers.image.revision: ${OWNED_PROVIDER_SOURCE_COMMIT:?set by owned-provider}
+      org.opencontainers.image.upstream.revision: ${SIMPLELOGIN_UPSTREAM_COMMIT}
+      org.opencontainers.image.source-date-epoch: ${OWNED_PROVIDER_SOURCE_DATE_EPOCH:?set by owned-provider}
+  entrypoint: ["/code/ops/owned-provider/entrypoint.sh"]
+  user: "65532:65532"
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=128m
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  environment: &app_environment
+    URL: ${OWNED_PROVIDER_URL:-http://127.0.0.1:17777}
+    EMAIL_DOMAIN: ${OWNED_PROVIDER_EMAIL_DOMAIN:-aliases.example.com}
+    FIRST_ALIAS_DOMAIN: ${OWNED_PROVIDER_EMAIL_DOMAIN:-aliases.example.com}
+    ALIAS_DOMAINS: ${OWNED_PROVIDER_ALIAS_DOMAINS:-["aliases.example.com","aliases.example.net"]}
+    OWNED_PROVIDER_CUSTOM_DOMAINS: ${OWNED_PROVIDER_CUSTOM_DOMAINS:-["mask.example.org"]}
+    SUPPORT_EMAIL: support@${OWNED_PROVIDER_EMAIL_DOMAIN:-aliases.example.com}
+    POSTMASTER: postmaster@${OWNED_PROVIDER_EMAIL_DOMAIN:-aliases.example.com}
+    ADMIN_EMAIL: ${OWNED_PROVIDER_ADMIN_EMAIL:-operator@example.com}
+    EMAIL_SERVERS_WITH_PRIORITY: ${OWNED_PROVIDER_EMAIL_SERVERS_WITH_PRIORITY:-[(10, "mailpit.")]}
+    DB_HOST: postgres
+    DB_PORT: "5432"
+    DB_NAME: simplelogin
+    DB_USER: simplelogin
+    DB_CONN_NAME: simplelogin-owned-provider
+    DB_PASSWORD_FILE: /run/database-secrets/postgres_password
+    MEM_STORE_URI: redis://redis:6379/0
+    POSTFIX_SERVER: ${OWNED_PROVIDER_SMTP_RELAY_HOST:-mailpit}
+    POSTFIX_BACKUP_SERVERS: ${OWNED_PROVIDER_SMTP_BACKUP_RELAYS:-}
+    POSTFIX_PORT: ${OWNED_PROVIDER_SMTP_RELAY_PORT:-1025}
+    POSTFIX_CONNECT_TIMEOUT: "2"
+    POSTFIX_TIMEOUT: "5"
+    LOCAL_FILE_UPLOAD: "1"
+    SAVE_UNSENT_DIR: /code/var/unsent
+    DISABLE_REGISTRATION: "1"
+    DISABLE_ONBOARDING: "1"
+    DISABLE_ALIAS_SUFFIX: "1"
+    WORDS_FILE_PATH: local_data/words.txt
+    ALIAS_LIMIT: ${OWNED_PROVIDER_ALIAS_LIMIT:-100/day;50/hour;20/minute}
+    ALIAS_CREATE_RATE_LIMIT_PAID: ${OWNED_PROVIDER_ALIAS_CREATE_RATE_LIMIT_PAID:-500,60:10000,3600}
+    MAX_NB_EMAIL_FREE_PLAN: "5"
+    SMTP_SIZE_LIMIT: ${OWNED_PROVIDER_SMTP_SIZE_LIMIT:-26214400}
+    DKIM_PRIVATE_KEY_PATH: /run/secrets/dkim_private_key
+    OPENID_PRIVATE_KEY_PATH: /run/secrets/openid_private_key
+    FLASK_SECRET_FILE: /run/secrets/flask_secret
+    PARTNER_API_TOKEN_SECRET_FILE: /run/secrets/partner_api_token_secret
+    RECOVERY_CODE_HMAC_SECRET_FILE: /run/secrets/recovery_code_hmac_secret
+    ALIAS_TRANSFER_TOKEN_SECRET_FILE: /run/secrets/alias_transfer_token_secret
+    VERP_EMAIL_SECRET_FILE: /run/secrets/verp_email_secret
+    MASTER_ENC_KEY_HEX_FILE: /run/secrets/master_enc_key_hex
+    MAC_KEY_HEX_FILE: /run/secrets/mac_key_hex
+    ABUSER_HKDF_SALT_FILE: /run/secrets/abuser_hkdf_salt
+    OWNED_PROVIDER_TEST_MODE: ${OWNED_PROVIDER_TEST_MODE:-}
+    OWNED_PROVIDER_JOB_STALE_SECONDS: ${OWNED_PROVIDER_JOB_STALE_SECONDS:-2100}
+    MAIL_EDGE_CONFIG_PATH: ${OWNED_PROVIDER_MAIL_EDGE_CONFIG_PATH:-}
+    HOME: /tmp
+    PYTHONPATH: /code
+  volumes: &app_volumes
+    - type: volume
+      source: database-secrets
+      target: /run/database-secrets
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: application-secrets
+      target: /run/secrets
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: runtime-config
+      target: /run/mail-edge
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: uploads
+      target: /code/static/upload
+      volume:
+        nocopy: true
+    - type: volume
+      source: unsent
+      target: /code/var/unsent
+      volume:
+        nocopy: true
+    - type: volume
+      source: mail-edge-spool
+      target: /code/var/mail-edge-spool
+      volume:
+        nocopy: true
+  depends_on: &app_dependencies
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  pids_limit: 512
+  mem_limit: 1536m
+  cpus: 2.0
+  stop_grace_period: 45s
+  ulimits:
+    nofile:
+      soft: 8192
+      hard: 8192
+
+x-app-operator: &app_operator
+  <<: *app
+  volumes:
+    - type: volume
+      source: database-secrets
+      target: /run/database-secrets
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: application-secrets
+      target: /run/secrets
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: operator-secrets
+      target: /run/operator-secrets
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: runtime-config
+      target: /run/mail-edge
+      read_only: true
+      volume:
+        nocopy: true
+    - type: volume
+      source: uploads
+      target: /code/static/upload
+      volume:
+        nocopy: true
+    - type: volume
+      source: unsent
+      target: /code/var/unsent
+      volume:
+        nocopy: true
+    - type: volume
+      source: mail-edge-spool
+      target: /code/var/mail-edge-spool
+      volume:
+        nocopy: true
+
+services:
+  upstream-image:
+    image: simplelogin-owned-provider-upstream:${OWNED_PROVIDER_SOURCE_COMMIT:?set by owned-provider}
+    platform: linux/amd64
+    profiles: ["build"]
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        OWNED_PROVIDER_SOURCE_COMMIT: ${OWNED_PROVIDER_SOURCE_COMMIT:?set by owned-provider}
+        SIMPLELOGIN_UPSTREAM_COMMIT: ${SIMPLELOGIN_UPSTREAM_COMMIT:?set by owned-provider}
+        SOURCE_DATE_EPOCH: ${OWNED_PROVIDER_SOURCE_DATE_EPOCH:?set by owned-provider}
+      labels:
+        org.opencontainers.image.licenses: AGPL-3.0-only
+        org.opencontainers.image.source: https://github.com/mateoltd/simplelogin-owned-provider
+        org.opencontainers.image.upstream.source: https://github.com/simple-login/app
+        org.opencontainers.image.revision: ${OWNED_PROVIDER_SOURCE_COMMIT:?set by owned-provider}
+        org.opencontainers.image.upstream.revision: ${SIMPLELOGIN_UPSTREAM_COMMIT}
+        org.opencontainers.image.source-date-epoch: ${OWNED_PROVIDER_SOURCE_DATE_EPOCH:?set by owned-provider}
+
+  postgres:
+    image: postgres:16.14-alpine3.23@sha256:42b8b8b29c8a4e933d88943e5b03001a78794905cf786e6e7634e9f2abd5a0d3
+    restart: unless-stopped
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - log_min_duration_statement=1000
+    environment:
+      POSTGRES_DB: simplelogin
+      POSTGRES_USER: simplelogin
+      POSTGRES_PASSWORD_FILE: /run/database-secrets/postgres_password
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - type: volume
+        source: database-secrets
+        target: /run/database-secrets
+        read_only: true
+        volume:
+          nocopy: true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U simplelogin -d simplelogin"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
+
+  redis:
+    image: redis:7.4.9-alpine3.21@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 640m
+    cpus: 1.0
+
+  mailpit:
+    image: axllent/mailpit:v1.30.0@sha256:0059ef81e492a7192af3816281eed6859eb078bd7bdc58b76757c13e10e53a7d
+    profiles: ["test"]
+    restart: unless-stopped
+    command: ["--database", "/data/mailpit.db", "--max", "2000"]
+    volumes:
+      - mailpit:/data
+    ports:
+      - 127.0.0.1:${OWNED_PROVIDER_MAILPIT_HTTP_PORT:-0}:8025
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+
+  migrate:
+    <<: *app
+    profiles: ["tools"]
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  initialize:
+    <<: *app
+    profiles: ["tools"]
+    command: ["python", "init_app.py"]
+
+  ops-migrate:
+    <<: *app
+    profiles: ["tools"]
+    command: ["python", "ops/owned-provider/scripts/ops_migrate.py"]
+
+  bootstrap:
+    <<: *app_operator
+    profiles: ["tools"]
+    environment:
+      <<: *app_environment
+      ADMIN_PASSWORD_FILE: /run/operator-secrets/admin_password
+    command: ["python", "ops/owned-provider/scripts/bootstrap.py"]
+
+  app:
+    <<: *app
+    restart: unless-stopped
+    mem_limit: ${OWNED_PROVIDER_APP_MEMORY_LIMIT:-1536m}
+    command:
+      - python
+      - ops/owned-provider/scripts/log_wrapper.py
+      - --service
+      - app
+      - --
+      - gunicorn
+      - wsgi:app
+      - --bind
+      - 0.0.0.0:7777
+      - --workers
+      - ${OWNED_PROVIDER_GUNICORN_WORKERS:-2}
+      - --timeout
+      - ${OWNED_PROVIDER_GUNICORN_TIMEOUT_SECONDS:-90}
+      - --max-requests
+      - "1000"
+      - --max-requests-jitter
+      - "50"
+      - --access-logfile
+      - '-'
+      - --error-logfile
+      - '-'
+      - --access-logformat
+      - '{"remote":"%(h)s","method":"%(m)s","path":"%(U)s","status":%(s)s,"bytes":%(B)s,"duration_us":%(D)s}'
+    ports:
+      - ${OWNED_PROVIDER_HTTP_BIND:-127.0.0.1}:${OWNED_PROVIDER_HTTP_PORT:-0}:7777
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7777/health', timeout=2).read()"]
+      interval: 3s
+      timeout: 10s
+      retries: 60
+      start_period: 30s
+
+  email:
+    <<: *app
+    restart: unless-stopped
+    command: ["python", "ops/owned-provider/scripts/log_wrapper.py", "--service", "email", "--", "python", "email_handler.py"]
+    ports:
+      - ${OWNED_PROVIDER_SMTP_BIND:-127.0.0.1}:${OWNED_PROVIDER_SMTP_PORT:-0}:20381
+    healthcheck:
+      test: ["CMD", "python", "ops/owned-provider/scripts/process_health.py", "/tmp/service.pid"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  job-runner:
+    <<: *app
+    restart: unless-stopped
+    command: ["python", "ops/owned-provider/scripts/log_wrapper.py", "--service", "job-runner", "--", "python", "job_runner.py"]
+    healthcheck:
+      test: ["CMD", "python", "ops/owned-provider/scripts/process_health.py", "/tmp/service.pid"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  e2e:
+    <<: *app_operator
+    profiles: ["tools"]
+    environment:
+      <<: *app_environment
+      OWNED_PROVIDER_BASE_URL: http://app:7777
+      OWNED_PROVIDER_SMTP_HOST: email
+      OWNED_PROVIDER_SMTP_PORT: "20381"
+      OWNED_PROVIDER_MAILPIT_URL: http://mailpit:8025
+      OWNED_PROVIDER_CUSTOM_DOMAIN: ${OWNED_PROVIDER_E2E_DOMAIN:-mask.example.org}
+      OWNED_PROVIDER_E2E_DOMAIN: ${OWNED_PROVIDER_E2E_DOMAIN:-mask.example.org}
+      OWNED_PROVIDER_E2E_MAILBOX_DOMAIN: ${OWNED_PROVIDER_E2E_MAILBOX_DOMAIN:-gmail.com}
+      ADMIN_PASSWORD_FILE: /run/operator-secrets/admin_password
+    command: ["python", "ops/owned-provider/scripts/e2e.py"]
+    depends_on:
+      app:
+        condition: service_healthy
+      email:
+        condition: service_healthy
+      job-runner:
+        condition: service_healthy
+
+  observer:
+    <<: *app
+    restart: unless-stopped
+    command: ["python", "ops/owned-provider/scripts/log_wrapper.py", "--service", "observer", "--", "python", "ops/owned-provider/scripts/observer.py"]
+    ports:
+      - ${OWNED_PROVIDER_OBSERVER_BIND:-127.0.0.1}:${OWNED_PROVIDER_OBSERVER_PORT:-0}:9090
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/livez', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      app:
+        condition: service_healthy
+      job-runner:
+        condition: service_healthy
+
+  synthetic:
+    <<: *app_operator
+    restart: unless-stopped
+    environment:
+      <<: *app_environment
+      OWNED_PROVIDER_BASE_URL: http://app:7777
+      OWNED_PROVIDER_SMTP_HOST: email
+      OWNED_PROVIDER_SMTP_PORT: "20381"
+      ADMIN_PASSWORD_FILE: /run/operator-secrets/admin_password
+    command: ["python", "ops/owned-provider/scripts/log_wrapper.py", "--service", "synthetic", "--", "python", "ops/owned-provider/scripts/synthetic_probe.py", "--loop-seconds", "${OWNED_PROVIDER_SYNTHETIC_INTERVAL_SECONDS:-300}"]
+    depends_on:
+      app:
+        condition: service_healthy
+      email:
+        condition: service_healthy
+
+volumes:
+  database-secrets:
+  application-secrets:
+  operator-secrets:
+  runtime-config:
+  postgres:
+  redis:
+  uploads:
+  unsent:
+  mail-edge-spool:
+  mailpit:

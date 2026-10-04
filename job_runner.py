@@ -9,6 +9,7 @@ import arrow
 import newrelic.agent
 import time
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import text
 from sqlalchemy.orm import Query
 from sqlalchemy.orm.exc import ObjectDeletedError
 from sqlalchemy.sql.expression import or_, and_
@@ -360,7 +361,7 @@ def take_job(job: Job, taken_before_time: arrow.Arrow) -> bool:
         "taken_before_time": taken_before_time.datetime,
     }
     try:
-        res = Session.execute(sql, args)
+        res = Session.execute(text(sql), args)
         Session.commit()
     except ObjectDeletedError:
         return False

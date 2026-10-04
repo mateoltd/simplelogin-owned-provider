@@ -90,8 +90,11 @@ def test_rate_limit_limits_by_user_id_ignoring_ip(flask_client):
     fix_rate_limit_after_request()
     assert res.status_code == HTTPStatus.TOO_MANY_REQUESTS
 
-    # Log out
-    flask_client.cookie_jar.clear()
+    # Log out through the public session lifecycle. Deleting only the browser
+    # cookie leaves the server-side session behind and bypasses the behavior
+    # this test is intended to preserve.
+    res = flask_client.get("/auth/logout")
+    assert res.status_code == HTTPStatus.FOUND
 
     # Log in with another user
     login(flask_client)
